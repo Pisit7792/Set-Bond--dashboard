@@ -35,7 +35,10 @@ import gold as G
 import meeting as MT
 import models6 as M
 import scenario as SC
+import crypto as CR
+import set_context as CX
 import set_engine as SE
+import set_swing as SW
 import signals as SG
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
@@ -46,13 +49,14 @@ DISCLAIMER = ("เครื่องมือเพื่อการศึก�
 
 ZONES = {
     "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "Fund Flow นักลงทุน",
+                          "SET Swing v5.11 + Context",
                           "สแกน SET100", "กราฟรายตัว",
                           "RRG", "Backtest + ตรวจสอบ", "Scenario ไทย",
                           "ฤดูกาล (TOM)", "ต้นทุนไทย"],
     "🌍 Global (Bond Crisis)": ["ภาพรวมโลก", "โมเดลทำกำไร (6)", "สัญญาณ Global",
                                 "จำลองสถานการณ์", "วิกฤตแบงก์รัน", "ข่าวสาร",
                                 "ห้องประชุม AI", "ข้อมูลมหภาค", "Trend สินทรัพย์โลก",
-                                "ทองคำ XAU (RTP v6.4)"],
+                                "ทองคำ XAU (RTP v6.4)", "คริปโต (BTC/ETH)"],
     "📖 ร่วม": ["Trade Log & สถิติ", "คู่มืออ่านค่า", "ข้อจำกัด & จุดพัฒนา"],
 }
 
@@ -147,6 +151,22 @@ def C_gold_bundle(period: str, need_carry: bool):
     return xau, dxy, jpy, vix
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def C_ctx_bundle(period: str):
+    def _cl(t):
+        d = SE.load_single(t, period)
+        if d.empty or "Close" not in d.columns:
+            return None
+        s = d["Close"].dropna()
+        return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
+    return _cl("^VIX"), _cl("^GSPC"), _cl("EEM")
+
+
+@st.cache_data(ttl=3600, show_spinner="ดึงราคาคริปโต...")
+def C_crypto(sym: str):
+    return SE.load_single(sym, "10y")
+
+
 # ---------------------------------------------------------------------------
 # โหลด + คำนวณฝั่ง SET (ทำงานเสมอ — ต้องมีอินเทอร์เน็ต)
 # ---------------------------------------------------------------------------
@@ -168,6 +188,8 @@ thb_close = thb["Close"].dropna() if ("Close" in thb.columns and len(thb)) \
     else pd.Series(dtype=float)
 if isinstance(thb_close, pd.DataFrame):
     thb_close = thb_close.iloc[:, 0]
+
+CTX_VIX, CTX_SPX, CTX_EEM = C_ctx_bundle(set_period)
 
 # ---------------------------------------------------------------------------
 # โหลด + คำนวณฝั่ง Global (ตามโหมด)
@@ -1348,12 +1370,188 @@ def page_gold():
         "ในกำไรจริง (Pine ใช้เป็นแค่ gate) — ผลที่นี่จึง *เข้มกว่า* TradingView")
 
 
+
+
+def page_swing():
+    st.subheader("SET Swing v5.11 + Market/Stock Context — คณิตเดียวกับ Pine")
+    st.caption("พอร์ตจากสคริปต์ของคุณแบบ same math, same defaults (Long only, "
+               "risk 0.5%, BOS 20, score≥55, stop 2 ATR → Chandelier 22/3, "
+               "TP1 OFF, kill 6%/แพ้ติด 5, เพดาน 6 เทรด/เดือน, โปรไฟล์ SET100 "
+               "ทางการ H2-2026) | ตัวเลือกที่ต้นฉบับปิด (flow/FX/event/skew/HTF/"
+               "squeeze ฯลฯ) ปิดที่นี่เช่นกันและยังไม่ port")
+    mc = CX.market_context(bench_close,
+                           vix_close=CTX_VIX, usdthb_close=thb_close,
+                           spx_close=CTX_SPX, eem_close=CTX_EEM)
+    if mc.get("ok"):
+        zc = st.success if "BUY" in mc["zone"] else \
+            (st.error if "SELL" in mc["zone"] else st.info)
+        zc(f"**Market Context: {mc['score']:+d} ({mc['zone']})** — "
+           + " | ".join(f"{k} {v:+d}" for k, v in mc["parts"].items()))
+        st.caption(f"🧭 {mc['align']}  ·  แรงผลักต่างชาติ (proxy) = {mc['press']:+d} "
+                   f"{mc['press_votes']}"
+                   + (f"  ·  ⚠️ ผันผวนดัชนี rank {mc['rv_rank']:.0f} (display)"
+                      if mc["vol_risk"] else ""))
+        if mc["flow_na"]:
+            st.caption("ℹ️ sFlow (CMF ดัชนี) = 0 เพราะ yfinance ไม่มี volume ของ "
+                       "^SET.BK — ใช้หน้า Fund Flow (ข้อมูลจริง) แทน")
+        for cline in mc["calendar"]:
+            st.caption("🗓️ " + cline)
+        st.caption("⚠️ " + mc["note"])
+    st.divider()
+    names = sorted(set_prices.keys())
+    c1, c2, c3 = st.columns([1.2, 1, 1.4])
+    pick = c1.selectbox("หุ้น (SET100)", names,
+                        format_func=lambda s: s.replace(".BK", ""), key="swpick")
+    surv = c2.checkbox("ติดธง Cash Balance/Trading Alert (เช็ก set.or.th)", False)
+    blk_txt = c3.text_input("วันงบ/XD (YYYY-MM-DD คั่น , — fail-open)", "")
+    blk_dates = [x.strip() for x in blk_txt.split(",") if x.strip()]
+    tkr = pick.replace(".BK", "")
+    scp = CX.StockCtxParams()
+    sc = CX.stock_context(set_prices[pick], bench_close, tkr, scp,
+                          surv_flag=surv, blackout_dates=blk_dates)
+    if not sc.get("ok"):
+        st.error(sc.get("status", "ข้อมูลไม่พอ"))
+        return
+    met = "context met" in sc["status"]
+    (st.success if met else st.warning)(
+        f"**Stock Context:** {sc['status']}  ·  Regime {sc['regime']}  ·  "
+        f"Conf L {sc['conf_l']} / S {sc['conf_s']} (thr 55)")
+    lvmap = {"ok": "🟢", "bad": "🔴", "warn": "🟡", "na": "⚪"}
+    st.dataframe(pd.DataFrame(
+        [{"": lvmap[lv], "รายการ": a, "ค่า": b} for a, b, lv in sc["rows"]]),
+        hide_index=True, height=420)
+    st.divider()
+    st.markdown("#### สถานะกลยุทธ์ Swing v5.11 (วันนี้)")
+    eqty = st.number_input("ทุนจำลอง (บาท)", 10000.0, 1e9, 1_000_000.0, 50000.0)
+    swp = SW.SwingParams(surv_flag=surv)
+    fr = SW.compute_frame(set_prices[pick], bench_close, tkr, swp, blk_dates)
+    stt = SW.state_today(fr, swp, eqty)
+    if stt["triggered"]:
+        st.success("🎯 " + stt["entry_note"])
+    else:
+        st.info(stt["entry_note"])
+    ck = pd.DataFrame([{"": "✅" if okk else "❌", "เงื่อนไข": nm, "หมายเหตุ": dt}
+                       for nm, okk, dt in stt["checklist"]])
+    st.dataframe(ck, hide_index=True)
+    e = stt["eff"]
+    st.caption(f"โปรไฟล์ {e['sector']} V{e['vol_tier']} L{e['liq_tier']} → "
+               f"พื้นสภาพคล่อง {e['liq_min']:.0f} ลบ., เพดานไซส์ {e['liq_max']:.1f}% "
+               f"ของ ADV, VT target {e['vt_tgt']:.1f}% | stop {stt['sl_dist']} บาท "
+               f"(2 ATR) | lot {stt['lot']} | size mult {stt['size_mult']}x → "
+               f"~{stt['board_qty']:,} หุ้น ที่ risk 0.5%")
+    with st.expander("🧪 Backtest v5.11 (ย้อนหลังช่วงข้อมูลที่โหลด)"):
+        bt = SW.backtest(fr, swp, eqty)
+        lvl, vmsg = SE.sample_verdict(bt["n"])
+        {"fail": st.error, "warn": st.warning, "ok": st.success}[lvl]("🧮 " + vmsg)
+        if bt["n"]:
+            lo, hi = bt["ci"]
+            ret = bt["equity"].pct_change().dropna()
+            dsr = SE.deflated_sharpe(ret, int(n_trials)) if len(ret) > 30 \
+                else float("nan")
+            b1 = st.columns(4)
+            b1[0].metric("เทรดปิดแล้ว", bt["n"])
+            b1[1].metric("Win rate", f"{bt['win_rate']:.0%}",
+                         f"CI {lo*100:.0f}–{hi*100:.0f}%")
+            b1[2].metric("Profit Factor", "∞" if not np.isfinite(bt["pf"])
+                         else f"{bt['pf']:.2f}")
+            b1[3].metric("Expectancy", f"{bt['expectancy_r']:+.2f} R")
+            b2 = st.columns(4)
+            b2[0].metric("กำไรสุทธิ", f"{bt['net_thb']:+,.0f} ฿",
+                         "หักต้นทุนไทยทุกข้าง")
+            b2[1].metric("Max DD", f"{bt['max_dd']:.0%}")
+            b2[2].metric("PSR", num(bt["psr"]))
+            b2[3].metric(f"DSR (trials={int(n_trials)})", num(dsr))
+            fge = go.Figure(go.Scatter(x=bt["equity"].index, y=bt["equity"]))
+            fge.update_layout(height=240, margin=dict(l=10, r=10, t=20, b=10))
+            plot(fge)
+            st.dataframe(bt["trades"], hide_index=True)
+        st.caption("⚠️ หุ้นเดียว in-sample + survivorship bias | งบ/XD ใช้วันที่"
+                   "กรอกเอง (Pine ใช้ฟีดจริง) | self-test ledger ของ Market "
+                   "Context ยังไม่ port — ความต่างจาก TradingView ที่เข้มกว่า: "
+                   "หักต้นทุนไทยเต็มทุกข้างในกำไร")
+
+
+def page_crypto():
+    st.subheader("คริปโต — Research Toolkit v6 + รายงาน 2008-2026")
+    st.error("**ไม่ใช่ระบบเข้าออก** — กรอบอ่านบริบทจาก heuristic ตัวอย่างเล็ก "
+             "(~4 วัฏจักร) | เกณฑ์คาลิเบรตกับ BTC daily เท่านั้น | ตัวเลข "
+             "on-chain ในกล่องหลักฐาน = snapshot จากรายงาน ไม่ใช่ค่าดึงสด",
+             icon="⚠️")
+    coin = st.selectbox("เหรียญ", ["BTC-USD", "ETH-USD", "SOL-USD"], 0)
+    is_btc = coin == "BTC-USD"
+    d = C_crypto(coin)
+    if d.empty or len(d) < 380:
+        st.error("ดึงราคาไม่ได้/ประวัติสั้นเกิน — ลองใหม่")
+        return
+    frc = CR.compute(d)
+    stc = CR.state(frc, is_btc)
+    m = st.columns(4)
+    m[0].metric("ราคา", f"${stc['price']:,.0f}",
+                f"ATH ${stc['ath']:,.0f}")
+    m[1].metric("Regime (SMA200)", stc["regime"])
+    if is_btc:
+        m[2].metric("Mayer ×", f"{stc['mayer']}", stc["mayer_zone"]
+                    + " (hot>2.4 / value<0.8)")
+    else:
+        m[2].metric("Mayer × (ดิบ)", f"{stc['mayer']}",
+                    "เกณฑ์โซน = BTC เท่านั้น")
+    m[3].metric("จาก ATH", f"{stc['dd_ath']:+.1f}%")
+    m = st.columns(4)
+    m[0].metric("RSI(14)", stc["rsi"])
+    m[1].metric("Realized vol/ปี (30d)", f"{stc['ann_vol']:.0f}%")
+    if is_btc:
+        m[2].metric("Pi Cycle gap", f"{stc['pi_gap']:+.1f}%",
+                    ("CROSS ใน 30 วัน!" if stc["pi_recent_cross"]
+                     else "fast ยังใต้ 2×slow") + " · mixed reliability")
+        m[3].metric("หลัง Halving 2024", f"+{stc['halv_days']} วัน",
+                    "peak เดิมมัก +12-18 เดือน")
+    else:
+        m[2].metric("Pi / Halving", "—", CR.ALT_CAVEAT[:38] + "…")
+    show = frc.tail(500)
+    fg = go.Figure()
+    fg.add_trace(go.Scatter(x=show.index, y=show["Close"], name=coin,
+                            line=dict(width=1.4)))
+    fg.add_trace(go.Scatter(x=show.index, y=show["reg_sma"], name="SMA200",
+                            line=dict(width=1.2, dash="dot", color="orange")))
+    if is_btc:
+        fg.add_trace(go.Scatter(x=show.index, y=show["pi_fast"],
+                                name="Pi fast 111", line=dict(width=1)))
+        fg.add_trace(go.Scatter(x=show.index, y=show["pi_slow2"],
+                                name="2×SMA350", line=dict(width=1, dash="dash")))
+        px_ = show[show["pi_cross"]]
+        if len(px_):
+            fg.add_trace(go.Scatter(x=px_.index, y=px_["Close"], mode="markers",
+                                    name="Pi cross", marker=dict(symbol="x",
+                                    size=10, color="red")))
+    fg.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10),
+                     legend=dict(orientation="h"))
+    plot(fg)
+    if not is_btc:
+        st.warning("⚠️ " + CR.ALT_CAVEAT)
+    with st.expander("⚖️ หลักฐานสองด้าน (จากรายงานที่แนบ)", expanded=True):
+        st.dataframe(pd.DataFrame(CR.EVIDENCE_TWO_SIDES), hide_index=True)
+    with st.expander("📌 Snapshot สำคัญจากรายงาน (กลางปี 2026 — ไม่ใช่ live)"):
+        st.dataframe(pd.DataFrame(CR.REPORT_SNAPSHOT,
+                                  columns=["ตัวชี้วัด", "ค่า ณ รายงาน"]),
+                     hide_index=True)
+    with st.expander("🎯 เกณฑ์เปลี่ยนมุมมอง (ตามรายงาน)"):
+        st.markdown("**เอียง Bull ถ้า:**\n"
+                    + "\n".join("- " + x for x in CR.BENCH_BULL)
+                    + "\n\n**เอียง Bear ถ้า:**\n"
+                    + "\n".join("- " + x for x in CR.BENCH_BEAR))
+    with st.expander("🧨 ความเสี่ยงเชิงโครงสร้าง"):
+        for r_ in CR.RISKS:
+            st.markdown("- " + r_)
+    st.caption("⚠️ " + CR.TOOL_DISCLAIMER)
+
+
 # ===========================================================================
 # Routing
 # ===========================================================================
 ROUTES = {
     "ภาพรวม SET + Overlay": page_set_overview,
     "Fund Flow นักลงทุน": page_set_flow,
+    "SET Swing v5.11 + Context": page_swing,
     "สแกน SET100": page_set_scan,
     "กราฟรายตัว": page_set_chart,
     "RRG": page_set_rrg,
@@ -1371,6 +1569,7 @@ ROUTES = {
     "ข้อมูลมหภาค": page_g_macro,
     "Trend สินทรัพย์โลก": page_g_trend,
     "ทองคำ XAU (RTP v6.4)": page_gold,
+    "คริปโต (BTC/ETH)": page_crypto,
     "Trade Log & สถิติ": page_tradelog,
     "คู่มืออ่านค่า": page_glossary,
     "ข้อจำกัด & จุดพัฒนา": page_limits,

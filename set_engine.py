@@ -12,8 +12,8 @@ set_engine.py — ชั้นหุ้นไทย SET100 (ตรรกะล�
 - เรียบเรียงสำหรับรอบ 1 ก.ค. – 31 ธ.ค. 2569 จากประกาศ ตลท. (มิ.ย. 2569):
   SET100 เข้าใหม่: MRDIYT, THAI, THCOM, WHAUP | ออก: JAS, JMART, SISB, SJWD
   SET50 เข้าใหม่ (จึงอยู่ใน SET100 แน่นอน): BCP, MRDIYT, TFG, THAI
-- ส่วนที่เหลือประกอบจากรอบก่อนหน้า — ตำแหน่ง mid-cap บางช่องอาจคลาดเคลื่อน
-  โปรดตรวจกับ set.or.th และแก้ในแถบข้างของแอปได้ทันที (ระบบข้ามตัวที่ดึงไม่ได้เอง)
+- รายชื่อ sync ตรงกับตาราง getProfile ใน SET Swing v5.11 (รายชื่อทางการ) —
+  อัปเดตพร้อมกันทุกรอบ ม.ค./ก.ค. และแก้ชั่วคราวได้ในแถบข้างของแอป
 - หุ้นเข้าตลาดใหม่ (เช่น MRDIYT, THAI) ประวัติราคาสั้น → หลายปัจจัยจะเป็น
   'ไม่มีข้อมูล' และไม่ถูกคิดคะแนนรวม — นี่คือพฤติกรรมที่ถูกต้อง ไม่ใช่บั๊ก
 """
@@ -37,19 +37,20 @@ MIN_TRADES_GOOD = 100
 # 1) Universe SET100 (แก้ไขได้ — ดู docstring ด้านบน)
 # ---------------------------------------------------------------------------
 SET100_H2_2026 = [
-    # --- ฐาน SET50 (รวมตัวเข้าใหม่รอบ H2/69: BCP, MRDIYT, TFG, THAI) ---
-    "ADVANC", "AOT", "AWC", "BANPU", "BBL", "BCP", "BDMS", "BEM", "BGRIM", "BH",
-    "BJC", "BTS", "CBG", "CENTEL", "COM7", "CPALL", "CPAXT", "CPF", "CPN", "CRC",
-    "DELTA", "EGCO", "GLOBAL", "GPSC", "GULF", "HMPRO", "IVL", "KBANK", "KKP",
-    "KTB", "KTC", "LH", "MINT", "MRDIYT", "MTC", "OR", "OSP", "PTT", "PTTEP",
-    "PTTGC", "RATCH", "SAWAD", "SCB", "SCC", "SCGP", "TFG", "THAI", "TIDLOR",
-    "TISCO", "TLI", "TOP", "TRUE", "TTB", "TU", "WHA",
-    # --- ส่วนขยาย SET51-100 (รวมตัวเข้ารอบ 69: GFPT, PTG, STECON, THCOM, WHAUP) ---
-    "AAV", "AMATA", "AP", "BA", "BAM", "BCH", "BLA", "BTG", "CHG", "CKP",
-    "DOHOME", "ERW", "GFPT", "GUNKUL", "HANA", "ICHI", "IRPC", "ITC", "JMT",
-    "KCE", "M", "MEGA", "MOSHI", "ONEE", "ORI", "PLANB", "PR9", "PRM", "PTG",
-    "QH", "SAPPE", "SCGD", "SIRI", "SNNP", "SPALI", "SPRC", "STA",
-    "STECON", "STGT", "TASCO", "TCAP", "THCOM", "TOA", "VGI", "WHAUP",
+    # รายชื่อทางการ H2-2026 (มีผล 1 ก.ค.–31 ธ.ค. 69) — sync ตรงจาก
+    # ตาราง getProfile ใน SET Swing v5.11 ของผู้ใช้ (ประกาศ ตลท. 17 มิ.ย. 69)
+    "AAV", "ADVANC", "AEONTS", "AMATA", "AOT", "AP", "AURA", "AWC", "BA",
+    "BAM", "BANPU", "BBL", "BCH", "BCP", "BCPG", "BDMS", "BEM", "BGRIM",
+    "BH", "BJC", "BLA", "BTG", "BTS", "CBG", "CCET", "CENTEL", "CHG",
+    "CK", "COM7", "CPALL", "CPF", "CPN", "CRC", "DELTA", "DOHOME", "EA",
+    "EGCO", "ERW", "GFPT", "GLOBAL", "GPSC", "GULF", "GUNKUL", "HANA", "HMPRO",
+    "ICHI", "IRPC", "IVL", "JMT", "JTS", "KBANK", "KCE", "KKP", "KTB",
+    "KTC", "LH", "M", "MEGA", "MINT", "MOSHI", "MRDIYT", "MTC", "OR",
+    "OSP", "PLANB", "PR9", "PRM", "PTG", "PTT", "PTTEP", "PTTGC", "QH",
+    "RATCH", "RCL", "SAWAD", "SCB", "SCC", "SCGP", "SIRI", "SPALI", "SPRC",
+    "STA", "STECON", "STGT", "TASCO", "TCAP", "TFG", "THAI", "THCOM", "TIDLOR",
+    "TISCO", "TLI", "TOA", "TOP", "TRUE", "TTB", "TU", "VGI", "WHA",
+    "WHAUP",
 ]
 
 BENCHMARK_CANDIDATES = [
