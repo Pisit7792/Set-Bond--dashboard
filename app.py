@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from datetime import datetime
 
 import numpy as np
@@ -29,6 +30,8 @@ import bridge as BR
 import data_sources as D
 import engine as E
 import explain as X
+import flows as FL
+import gold as G
 import meeting as MT
 import models6 as M
 import scenario as SC
@@ -42,12 +45,14 @@ DISCLAIMER = ("เครื่องมือเพื่อการศึก�
               "ทำกำไรจากสัญญาณได้สม่ำเสมอ (Barber et al. 2020)")
 
 ZONES = {
-    "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "สแกน SET100", "กราฟรายตัว",
+    "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "Fund Flow นักลงทุน",
+                          "สแกน SET100", "กราฟรายตัว",
                           "RRG", "Backtest + ตรวจสอบ", "Scenario ไทย",
                           "ฤดูกาล (TOM)", "ต้นทุนไทย"],
     "🌍 Global (Bond Crisis)": ["ภาพรวมโลก", "โมเดลทำกำไร (6)", "สัญญาณ Global",
                                 "จำลองสถานการณ์", "วิกฤตแบงก์รัน", "ข่าวสาร",
-                                "ห้องประชุม AI", "ข้อมูลมหภาค", "Trend สินทรัพย์โลก"],
+                                "ห้องประชุม AI", "ข้อมูลมหภาค", "Trend สินทรัพย์โลก",
+                                "ทองคำ XAU (RTP v6.4)"],
     "📖 ร่วม": ["Trade Log & สถิติ", "คู่มืออ่านค่า", "ข้อจำกัด & จุดพัฒนา"],
 }
 
@@ -115,6 +120,31 @@ def C_global_prices():
     move = px[D.YF_MOVE].dropna() if D.YF_MOVE in px else pd.Series(dtype=float)
     assets = px[[c for c in px.columns if c != D.YF_MOVE]]
     return assets, move
+
+
+FLOW_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "Set_update.csv")
+
+
+def load_flows():
+    """อ่านไฟล์ flow ล่าสุดจากดิสก์ทุกครั้ง (ไฟล์เล็ก ~60KB, เปลี่ยนได้ระหว่างวัน)"""
+    if not os.path.exists(FLOW_PATH):
+        return pd.DataFrame(), ["ยังไม่มีไฟล์ Set_update.csv"]
+    return FL.load_flow_csv(FLOW_PATH)
+
+
+@st.cache_data(ttl=3600, show_spinner="ดึงราคาทองคำ + สินทรัพย์ที่ใช้กรอง...")
+def C_gold_bundle(period: str, need_carry: bool):
+    def _close(d):
+        if d is None or d.empty or "Close" not in d.columns:
+            return None
+        s = d["Close"].dropna()
+        return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
+    xau = SE.load_single("GC=F", period)
+    dxy = _close(SE.load_single("DX-Y.NYB", period))
+    jpy = _close(SE.load_single("USDJPY=X", period)) if need_carry else None
+    vix = _close(SE.load_single("^VIX", period)) if need_carry else None
+    return xau, dxy, jpy, vix
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +325,14 @@ def page_set_overview():
                   "ค่าบวก = บาทอ่อน")
         d3.metric("3 เดือน", f"{tctx['chg_3m']:+.1f}%")
         st.caption("💱 " + tctx["text"])
+    _f, _fi = load_flows()
+    if len(_f):
+        _f20 = float(_f["Foreign"].tail(20).sum())
+        _stk = FL.streak(_f["Foreign"])
+        _dir = "ซื้อ" if _stk > 0 else "ขาย"
+        st.caption(f"🌊 ต่างชาติสะสม 20 วัน: **{_f20:+,.0f} ลบ.** "
+                   f"({_dir}สุทธิติดกัน {abs(_stk)} วัน, ถึง {_f.index[-1]:%d/%m}) "
+                   "— รายละเอียดที่หน้า Fund Flow")
     with st.expander("🔍 ช่องทางส่งผ่าน Global → SET (เกรดหลักฐานกำกับ)"):
         st.dataframe(pd.DataFrame(BR.GLOBAL_TO_SET), hide_index=True)
         st.caption("หลักฐานหลัก: VIX พยากรณ์เงินไหลเข้า SET เป็นลบ / วัฏจักร Fed-"
@@ -1047,14 +1085,15 @@ def page_limits():
         "จึงไม่ถูกผูกเข้า backtest โดยเจตนา\n"
         "- ATR ฝั่ง Global ประมาณจากราคาปิด (ไม่มี high/low)\n\n"
         "#### จุดพัฒนาต่อ (เรียงตามผลตอบแทนต่อแรง)\n"
-        "1. **หน้า import ยอดซื้อขายต่างชาติ/NVDR แบบ CSV** — ข้อมูลมีฟรีบนเว็บ SET "
-        "แต่ไม่มี API; ให้ผู้ใช้วางเองแล้วระบบวิเคราะห์ให้\n"
+        "1. ~~หน้า import flow รายกลุ่มนักลงทุน~~ ✅ **ทำแล้ว** (หน้า Fund Flow: "
+        "อ่าน/เพิ่มรายวัน/ดาวน์โหลด + สถิติ same-day vs next-day จากข้อมูลจริง)\n"
         "2. **Validate overlay ด้วย event study** — วัด lead-lag ระหว่าง composite/"
         "โมเดลเสี่ยง กับผลตอบแทน SET ล่วงหน้า (ระวัง: เหตุการณ์วิกฤตมีน้อย, n เล็ก)\n"
         "3. **Walk-forward / purged CV** สำหรับ backtest — จำเป็นก่อนใช้เงินจริง\n"
         "4. **Point-in-time constituents** แก้ survivorship bias (ข้อมูลไม่ฟรี)\n"
         "5. **Per-stock spread จริง** แทนค่าคงที่ — สำคัญมากกับ SET51-100\n"
-        "6. **ดึง OHLC เต็มฝั่ง Global** ให้ ATR แม่นขึ้น\n"
+        "6. ดึง OHLC เต็มฝั่ง Global — ✅ ทำแล้วสำหรับทองคำ (หน้า XAU ใช้ ATR "
+        "จาก high/low จริง); สินทรัพย์โลกตัวอื่นยังใช้ราคาปิด\n"
         "7. **Calibration log ห้องประชุม AI** — บันทึกมติเทียบผลจริง สะสมหลักฐาน"
         "ว่าห้องประชุมช่วยจริงไหม\n"
         "8. **Stale-data detector** — เตือนเมื่อ ticker ใดหยุดอัปเดตเงียบๆ\n"
@@ -1065,11 +1104,256 @@ def page_limits():
     st.caption(DISCLAIMER)
 
 
+
+
+def page_set_flow():
+    st.subheader("Fund Flow รายกลุ่มนักลงทุน — บริบท ไม่ใช่สัญญาณ")
+    fdf, issues = load_flows()
+    if fdf.empty:
+        st.warning("ยังไม่มีไฟล์ Set_update.csv ในโฟลเดอร์แอป — อัปโหลดเพื่อเริ่มต้น")
+        up0 = st.file_uploader("อัปโหลด Set_update.csv", type=["csv"])
+        if up0 is not None:
+            d0, iss0 = FL.load_flow_csv(up0)
+            if d0.empty:
+                st.error("อ่านไฟล์ไม่ได้: " + "; ".join(iss0))
+            else:
+                FL.save_flow_csv(d0, FLOW_PATH)
+                st.success(f"บันทึกแล้ว {len(d0)} วัน — รีเฟรชหน้า")
+                st.rerun()
+        return
+    for i in issues:
+        st.caption("ℹ️ " + i)
+    last = fdf.index[-1]
+    st.caption(f"ข้อมูล {len(fdf)} วันทำการ: {fdf.index[0]:%d/%m/%Y} → "
+               f"**{last:%d/%m/%Y}** (สุทธิ หน่วยล้านบาท)")
+
+    st.dataframe(FL.flow_summary(fdf), hide_index=True)
+    cc = FL.same_day_corr(fdf)
+    if cc.get("ok"):
+        st.info(f"📐 จากข้อมูลของคุณเอง (n={cc['n']} วันล่าสุด): สหสัมพันธ์ flow "
+                f"ต่างชาติกับการเปลี่ยนแปลงดัชนี **วันเดียวกัน r={cc['same_day']:.2f}** "
+                f"แต่พยากรณ์ **วันถัดไป r={cc['next_day']:.2f}** — "
+                "flow จึงเป็น 'กระจกสะท้อนวันนี้' มากกว่า 'เข็มทิศพรุ่งนี้'")
+    st.warning("⚠️ " + FL.EVIDENCE_NOTE + " | จอนี้ *ไม่ถูกผูก* เข้า overlay/backtest "
+               "จนกว่าจะผ่าน validation")
+
+    win_map = {"3 เดือน": 63, "6 เดือน": 126, "1 ปี": 250, "ทั้งหมด": len(fdf)}
+    wsel = st.selectbox("ช่วงกราฟ", list(win_map), index=2)
+    sub = fdf.tail(win_map[wsel])
+    figc = go.Figure()
+    for c_ in FL.NET_COLS:
+        figc.add_trace(go.Scatter(x=sub.index, y=sub[c_].cumsum(),
+                                  name=FL.TH_NAMES[c_], line=dict(width=1.5)))
+    figc.update_layout(title="ยอดสะสมสุทธิ (เริ่มนับศูนย์ที่ต้นช่วงที่เลือก)",
+                       height=320, margin=dict(l=10, r=10, t=40, b=10),
+                       legend=dict(orientation="h"))
+    plot(figc)
+    r20 = fdf["Foreign"].rolling(20).sum().reindex(sub.index)
+    figb = go.Figure(go.Bar(x=sub.index, y=r20, name="ต่างชาติสะสม 20 วัน"))
+    figb.add_hline(y=0, line_width=1)
+    figb.update_layout(title="ต่างชาติ: ยอดสะสมเคลื่อนที่ 20 วันทำการ (ลบ.)",
+                       height=260, margin=dict(l=10, r=10, t=40, b=10))
+    plot(figb)
+    with st.expander("📋 ข้อมูลรายวันล่าสุด (15 แถว)"):
+        st.dataframe(fdf.sort_index(ascending=False).head(15)
+                     .rename(columns=FL.TH_NAMES))
+
+    st.markdown("#### ➕ เพิ่ม/แก้ข้อมูลรายวัน")
+    nx = last + pd.offsets.BDay(1)
+    today = pd.Timestamp.today().normalize()
+    with st.form("flow_add"):
+        c1, c2 = st.columns([1, 2])
+        dsel = c1.date_input("วันที่", value=min(nx, today).date(),
+                             max_value=today.date())
+        ow = c1.checkbox("เขียนทับถ้าวันที่ซ้ำ", value=False)
+        c3, c4, c5 = c2.columns(3)
+        v_in = c3.number_input("Institute (ลบ.)", value=0.0, step=50.0,
+                               format="%.2f")
+        v_fo = c4.number_input("Foreign (ลบ.)", value=0.0, step=50.0,
+                               format="%.2f")
+        v_re = c5.number_input("Retail (ลบ.)", value=0.0, step=50.0,
+                               format="%.2f")
+        c6, c7 = c2.columns(2)
+        v_ix = c6.number_input("Set Index (เว้น 0 = ไม่กรอก)", value=0.0,
+                               step=1.0, format="%.2f")
+        v_ch = c7.number_input("Set Change (จุด)", value=0.0, step=0.5,
+                               format="%.2f")
+        sub_btn = st.form_submit_button("💾 บันทึกลงไฟล์")
+    if sub_btn:
+        ssum = v_in + v_fo + v_re
+        if abs(ssum) > 1.0:
+            st.warning(f"3 กลุ่มรวมกัน = {ssum:+,.2f} ลบ. (ไฟล์เดิมรวม ≈ 0 เสมอ) "
+                       "— บันทึกให้ตามที่กรอก แต่โปรดตรวจตัวเลขอีกครั้ง")
+        d2, okk, msg = FL.append_or_update(
+            fdf, pd.Timestamp(dsel), v_in, v_fo, v_re,
+            set_index=(None if v_ix == 0 else v_ix),
+            set_change=(None if v_ch == 0 and v_ix == 0 else v_ch),
+            overwrite=ow)
+        if okk:
+            try:
+                FL.save_flow_csv(d2, FLOW_PATH)
+                st.success("✅ " + msg)
+            except Exception as e_:
+                st.error(f"เขียนไฟล์ไม่ได้ ({e_}) — ใช้ปุ่มดาวน์โหลดด้านล่างแทน")
+            st.rerun()
+        else:
+            st.error(msg)
+    st.download_button("⬇️ ดาวน์โหลด Set_update.csv (ฉบับล่าสุด)",
+                       FL.to_csv_bytes(fdf), "Set_update.csv", "text/csv")
+    st.info("💾 **ความถาวรของข้อมูล (พูดตรงๆ):** บนเครื่องตัวเอง การบันทึกถาวรทันที "
+            "| บน Streamlit Cloud ไฟล์อยู่ได้จนกว่าเครื่องจะ restart/redeploy — "
+            "หลังเพิ่มข้อมูลจึงควร **ดาวน์โหลดแล้วอัปกลับ GitHub** (Add file → "
+            "Upload files ทับไฟล์เดิม) เพื่อเก็บถาวร")
+
+
+def page_gold():
+    st.subheader("ทองคำ — XAU Research Trend Pullback v6.4 (พอร์ตจากสคริปต์ของคุณ)")
+    st.warning("**อ่านก่อนใช้:** (1) ใช้ **GC=F ฟิวเจอร์ส** แทน spot XAUUSD — "
+               "ระดับ/ATR ใกล้เคียงแต่ basis ต่างเล็กน้อย (2) ผล backtest เป็น "
+               "in-sample และชื่อรุ่น v6.4 บ่งว่าผ่านการปรับหลายรอบ → DSR ตั้ง "
+               "trials สูงไว้ก่อน (3) Tier C ของสคริปต์ (real-yield, gold-DXY "
+               "inverse) **จงใจไม่โค้ด** ตามต้นฉบับ (4) เป้า validate ของสคริปต์เอง: "
+               "**30-50 เทรดจริงใน journal, PF > 1.5 หลัง swap**")
+    c1, c2, c3, c4 = st.columns(4)
+    g_period = c1.selectbox("ช่วงข้อมูล", ["3y", "5y", "10y"], 1)
+    spread_c = c2.number_input("Spread ไป-กลับ (¢/oz)", 0.0, 200.0, 25.0, 5.0)
+    swap_l = c3.number_input("Swap ฝั่ง Long ($/oz/คืน)", -5.0, 5.0, -0.76, 0.01)
+    swap_s = c4.number_input("Swap ฝั่ง Short ($/oz/คืน)", -5.0, 5.0, 0.30, 0.01)
+    c5, c6, c7, c8 = st.columns(4)
+    use_carry = c5.checkbox("Tier B: JPY carry veto", False)
+    use_er = c6.checkbox("Tier B: ER hard gate", False)
+    use_w = c7.checkbox("Tier B: Weekly EMA gate", False)
+    use_y10 = c8.checkbox("Tier B: US10Y gate (ต้องเปิดฝั่ง Global Live)", False)
+    g_trials = st.number_input("DSR trials (v6.4 → แนะนำ ≥ 30)", 1, 5000, 30)
+
+    p = G.GoldParams(spread_cents=spread_c, swap_long_oz=swap_l,
+                     swap_short_oz=swap_s, use_carry=use_carry,
+                     use_er_gate=use_er, use_htf_w=use_w, use_y10=use_y10)
+    xau, dxy, jpy, vix = C_gold_bundle(g_period, use_carry)
+    if xau.empty or len(xau) < 320:
+        st.error("ดึงราคาทอง (GC=F) ไม่ได้/สั้นเกิน — ตรวจอินเทอร์เน็ตแล้วลองใหม่")
+        return
+    y10s = S("DGS10") if (use_y10 and g_on and not is_demo) else None
+    if use_y10 and (y10s is None or not len(y10s)):
+        st.caption("US10Y gate: ไม่มีข้อมูล (ฝั่ง Global ไม่ได้เปิด Live) — "
+                   "gate ผ่านอัตโนมัติแบบ fail-open ตามต้นฉบับ")
+        y10s = None
+    fr = G.compute_frame(xau, dxy_close=dxy, y10_close=y10s,
+                         usdjpy_close=jpy, vix_close=vix, p=p)
+    stt = G.state_today(fr, p)
+    if dxy is None:
+        st.caption("DXY ดึงไม่ได้ — veto ผ่านอัตโนมัติ (fail-open ตามต้นฉบับ)")
+
+    m = st.columns(4)
+    m[0].metric("Regime (SMA200+slope)", stt["regime"])
+    m[1].metric("Score L / S", f"{stt['score_l']} / {stt['score_s']}",
+                "เกณฑ์ ≥ 40")
+    m[2].metric("RSI(14)", stt["rsi"] if stt["rsi"] is not None else "—")
+    m[3].metric("ATR% ของราคา", f"{stt['atr_pct']:.2f}%",
+                f"vol rank {stt['vol_rank']:.0f}"
+                if stt["vol_rank"] is not None else "")
+    st.markdown(f"**สถานะวันนี้:** {stt['status']}")
+    if stt["triggered"]:
+        st.success("เงื่อนไขเข้า *ครบเมื่อปิดแท่งล่าสุด* — ตามกติกา ลงมือที่ "
+                   "**ราคาเปิดแท่งถัดไป** เท่านั้น (ไม่ไล่ราคา)")
+    if stt["plan"]:
+        pl = stt["plan"]
+        st.info(f"แผนอ้างอิงฝั่ง **{pl['side']}** (ต่อทุน $10,000, เสี่ยง 1%): "
+                f"stop {pl['stop_dist']}$ → ~{pl['qty_oz']} oz "
+                f"(size mult {pl['size_mult']}x) | SL เริ่ม ~{pl['sl']} | "
+                f"{pl['trail']}")
+    ck = pd.DataFrame(stt["checklist"])
+    ck["ผ่าน"] = ck["ผ่าน"].map({True: "✅", False: "❌"})
+    st.dataframe(ck, hide_index=True)
+
+    show = fr.tail(250)
+    figg = go.Figure()
+    figg.add_trace(go.Candlestick(x=show.index, open=show["Open"],
+                                  high=show["High"], low=show["Low"],
+                                  close=show["Close"], name="GC=F"))
+    figg.add_trace(go.Scatter(x=show.index, y=show["reg_sma"], name="SMA200[1]",
+                              line=dict(width=1.4, color="#888")))
+    figg.add_trace(go.Scatter(x=show.index, y=show["pb_ema"], name="EMA21",
+                              line=dict(width=1, dash="dot")))
+    figg.add_trace(go.Scatter(x=show.index, y=show["st_ema"], name="EMA50",
+                              line=dict(width=1, dash="dash")))
+    for cond, mark, col in [("long_cond", "triangle-up", "#2c7"),
+                            ("short_cond", "triangle-down", "#e55")]:
+        pts = show[show[cond]]
+        if len(pts):
+            figg.add_trace(go.Scatter(x=pts.index, y=pts["Close"],
+                                      mode="markers", name=cond,
+                                      marker=dict(symbol=mark, size=9,
+                                                  color=col)))
+    figg.update_layout(height=460, xaxis_rangeslider_visible=False,
+                       margin=dict(l=10, r=10, t=30, b=10),
+                       legend=dict(orientation="h"))
+    plot(figg)
+
+    st.markdown("#### Backtest (สัญญาณปิดแท่ง → เข้า open แท่งถัดไป, "
+                "หัก spread ทุกเทรด, แยกบัญชี swap)")
+    bt = G.backtest(fr, p)
+    lvl, vmsg = G.validation_verdict(bt)
+    {"fail": st.error, "warn": st.warning, "ok": st.success}[lvl]("🧮 " + vmsg)
+    if bt["n"] > 0:
+        lo, hi = bt["ci"]
+        ret = bt["equity"].pct_change().dropna()
+        dsr = (SE.deflated_sharpe(ret, int(g_trials))
+               if len(ret) > 30 else float("nan"))
+        b1 = st.columns(4)
+        b1[0].metric("เทรด (ปิดแล้ว)", bt["n"],
+                     f"ข้ามเพราะเบรก {bt['halted_days']} ครั้ง")
+        b1[1].metric("Win rate", f"{bt['win_rate']:.0%}",
+                     f"95% CI {lo*100:.0f}–{hi*100:.0f}%")
+        b1[2].metric("PF ก่อน swap",
+                     "∞" if not np.isfinite(bt["pf_pre_swap"])
+                     else f"{bt['pf_pre_swap']:.2f}")
+        b1[3].metric("PF หลัง swap",
+                     "∞" if not np.isfinite(bt["pf_after_swap"])
+                     else f"{bt['pf_after_swap']:.2f}", "เป้าสคริปต์ > 1.5")
+        b2 = st.columns(4)
+        b2[0].metric("Expectancy", f"{bt['expectancy_r']:+.2f} R")
+        b2[1].metric("กำไรสุทธิ (หัก spread)", f"{bt['net_profit']:+,.0f} $",
+                     f"swap รวม {bt['swap_total']:+,.0f} $")
+        b2[2].metric("สุทธิหลัง swap", f"{bt['net_after_swap']:+,.0f} $")
+        b2[3].metric("Max DD | PSR | DSR",
+                     f"{bt['max_dd']:.0%} | {num(bt['psr'])} | {num(dsr)}")
+        fige = go.Figure(go.Scatter(x=bt["equity"].index, y=bt["equity"],
+                                    name="Equity $"))
+        fige.update_layout(height=260,
+                           title="เส้นทุน mark-to-market รายวัน (เริ่ม $10,000)",
+                           margin=dict(l=10, r=10, t=40, b=10))
+        plot(fige)
+        with st.expander(f"📋 รายการเทรด ({bt['n']})"):
+            st.dataframe(bt["trades"], hide_index=True)
+        st.download_button("⬇️ Journal เทรดทอง (CSV)",
+                           bt["trades"].to_csv(index=False)
+                           .encode("utf-8-sig"),
+                           "xau_rtp_journal.csv", "text/csv")
+    explain_box(
+        "กติกาเต็มของ v6.4 ที่พอร์ตมา (และจุดที่ต่างจากต้นฉบับ)",
+        "**Tier A (เปิด):** regime = ปิด > SMA200 เมื่อวาน + slope 5 แท่ง | "
+        "entry pullback: ราคา > EMA50, low แตะ EMA21 แล้วปิดกลับเหนือ, "
+        "ปิด > เปิด, RSI ≥ 40 | score ≥ 40 (mom126 = 40, ER ≥ 0.30 = 30, "
+        "ใกล้ high 252 วัน = 30) | DXY trend veto | vol-shock gate P90 | "
+        "gap ≤ 1.5 dayATR | cost ≤ 10% ของ 1R\n\n"
+        "**Stop/Trail:** เริ่ม 1.8×dayATR → Chandelier 22 แท่ง −3×ATR "
+        "(ratchet ไม่ถอยหลัง) ไม่มี TP ตายตัว (ปล่อย runner)\n\n"
+        "**Sizing:** เสี่ยง 1% × ตัวลด (vol-target เหนือ P80, DD ≥ 10% → ×0.5, "
+        "แพ้ติด ≥ 2 → ×0.6, พื้น 0.2) | เบรก: DD เดือน ≥ 6% หรือแพ้ติด 5 → "
+        "หยุดเดือนนั้น, เพดาน 20 เทรด/เดือน\n\n"
+        "**Tier B (ปิดตั้งต้น):** US10Y gate, JPY+VIX carry veto, Weekly EMA, "
+        "ER hard gate — เปิดได้ข้างบนแต่ต้อง validate เอง\n\n"
+        "**ต่างจากต้นฉบับ (ตรงๆ):** ใช้ GC=F แทน spot | backtest หัก spread "
+        "ในกำไรจริง (Pine ใช้เป็นแค่ gate) — ผลที่นี่จึง *เข้มกว่า* TradingView")
+
+
 # ===========================================================================
 # Routing
 # ===========================================================================
 ROUTES = {
     "ภาพรวม SET + Overlay": page_set_overview,
+    "Fund Flow นักลงทุน": page_set_flow,
     "สแกน SET100": page_set_scan,
     "กราฟรายตัว": page_set_chart,
     "RRG": page_set_rrg,
@@ -1086,6 +1370,7 @@ ROUTES = {
     "ห้องประชุม AI": page_g_meeting,
     "ข้อมูลมหภาค": page_g_macro,
     "Trend สินทรัพย์โลก": page_g_trend,
+    "ทองคำ XAU (RTP v6.4)": page_gold,
     "Trade Log & สถิติ": page_tradelog,
     "คู่มืออ่านค่า": page_glossary,
     "ข้อจำกัด & จุดพัฒนา": page_limits,

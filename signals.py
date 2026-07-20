@@ -109,13 +109,16 @@ def build_signals(model_scores: dict[str, dict], asset_impact: dict[str, dict],
         if math.isnan(a) or a <= 0:
             skipped.append({"asset": disp, "เหตุผล": "คำนวณ ATR ไม่ได้"})
             continue
-        sl = last - SL_ATR * a if best["side"] == "LONG" else last + SL_ATR * a
-        tp = last + TP_ATR * a if best["side"] == "LONG" else last - TP_ATR * a
+        entry_r = round(last, 4)
+        sl_raw = last - SL_ATR * a if best["side"] == "LONG" else last + SL_ATR * a
+        sl_r = round(sl_raw, 4)
+        # tp คิดจาก sl ที่ปัดแล้ว เพื่อให้ R:R ที่แสดง (1:2) ตรงเป๊ะจริง ไม่เพี้ยนจากการปัดแยก
+        tp_r = round(entry_r + (TP_ATR / SL_ATR) * (entry_r - sl_r), 4)
         mom = float(c.pct_change(252).iloc[-1] * 100) if len(c) > 252 else float("nan")
         signals.append({
             "asset": disp, "ticker": best["ticker"], "side": best["side"],
             "model": best["model"], "strength": round(best["score"], 0),
-            "entry": round(last, 4), "sl": round(sl, 4), "tp": round(tp, 4),
+            "entry": entry_r, "sl": sl_r, "tp": tp_r,
             "rr": "1:2",
             "atr14≈": round(a, 4),
             "rsi14": round(rsi(c), 0),

@@ -144,8 +144,8 @@ def demo_bundle(seed: int = 11) -> dict:
     move = stress_like(90, 0.8, 110).clip(40, None)
 
     # v3 demo series: เงินเฟ้อ/น้ำมัน/ทอง/repo/เงินฝาก/ยอดกู้ Fed ฯลฯ
-    cpi_m = pd.Series(300 * (1.0025 ** np.arange(n // 21 + 1)),
-                      index=days[::21][: n // 21 + 1])
+    _i21 = days[::21]  # กัน off-by-one: ให้ค่ายาวตาม index เสมอ
+    cpi_m = pd.Series(300 * (1.0025 ** np.arange(len(_i21))), index=_i21)
     t5yie = stress_like(2.3, 0.004, 0.9).clip(0.5, None)
     oil = stress_like(75, 0.35, 40).clip(20, None)
     effr = pd.Series(np.full(n, 5.33), index=days)
@@ -156,7 +156,8 @@ def demo_bundle(seed: int = 11) -> dict:
     dip[stress_end:] = np.linspace(-600, -200, n - stress_end)
     depo = (depo_base + dip).iloc[::5]
     rrp = pd.Series(np.linspace(1200, 150, n), index=days) + rw(0, 3.0)
-    debt_gdp = pd.Series(np.linspace(118, 124, n // 63 + 1), index=days[::63][: n // 63 + 1])
+    _i63 = days[::63]
+    debt_gdp = pd.Series(np.linspace(118, 124, len(_i63)), index=_i63)
     fred = {"CPIAUCSL": cpi_m, "T5YIE": t5yie, "DCOILWTICO": oil,
             "SOFR": sofr, "EFFR": effr, "BORROW": borrow,
             "DPSACBW027SBOG": depo, "RRPONTSYD": rrp,
