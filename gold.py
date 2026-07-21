@@ -369,6 +369,15 @@ def state_today(fr: pd.DataFrame, p: GoldParams = None,
 # Backtest: สัญญาณปิดแท่ง t → เข้า open(t+1), trail chandelier, swap แยกบัญชี
 # ---------------------------------------------------------------------------
 
+def nights_for(wd: int, seven_day: bool, trip_wed: bool = True) -> int:
+    """จำนวน 'คืน swap' ต่อแท่ง: ข้อมูล 5 วัน/สัปดาห์ → triple คืนวันพุธ
+    (ชดเชยเสาร์-อาทิตย์ตามธรรมเนียมโบรก); ข้อมูล 7 วัน (เช่น PAXG-USD) →
+    1 คืน/แท่งทุกวัน — รวมต่อสัปดาห์เท่ากันทั้งสองโหมด (7 คืน)"""
+    if seven_day:
+        return 1
+    return 3 if (trip_wed and wd == 3) else 1
+
+
 def backtest(fr: pd.DataFrame, p: GoldParams = None,
              equity0: float = 10000.0) -> dict:
     p = p or GoldParams()
@@ -384,6 +393,7 @@ def backtest(fr: pd.DataFrame, p: GoldParams = None,
     atrpc = fr["atr_pct"].to_numpy(float)
     idx = fr.index
     weekday = idx.weekday  # Mon=0 ... Thu=3
+    seven_day = bool((idx.weekday >= 5).any())
     month = idx.to_period("M")
 
     rt_cost = p.spread_cents / 100.0
@@ -412,7 +422,7 @@ def backtest(fr: pd.DataFrame, p: GoldParams = None,
             month_trades = 0
         # swap accrual: ถือมาจากแท่งก่อน (triple ถ้าวันนี้พฤหัส = ข้ามคืนพุธ)
         if pos != 0 and i > entry_i:
-            nights = 3 if (p.trip_wed and weekday[i] == 3) else 1
+            nights = nights_for(int(weekday[i]), seven_day, p.trip_wed)
             rate = p.swap_long_oz if pos > 0 else p.swap_short_oz
             swap_open += nights * rate * qty
         # exit ด้วย trail/base stop

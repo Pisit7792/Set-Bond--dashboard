@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 import crypto as CR
+import gold as G
 import set_context as CX
 import set_swing as SW
 
@@ -151,6 +152,22 @@ frx = CR.compute(dfx, CR.CryptoParams(pi_fast=3, pi_slow=10, reg_len=5,
 check("cr_pi_cross_fires", bool(frx["pi_cross"].any()))
 check("cr_tables", len(CR.EVIDENCE_TWO_SIDES) >= 5 and len(CR.BENCH_BEAR) >= 3
       and len(CR.RISKS) >= 4 and len(CR.ALT_CAVEAT) > 40)
+
+# ---------- rank_universe ----------
+dn_stock = ohlc(60 - np.arange(760) * 0.03)
+pr = {"PTT.BK": stock_bt, "AAV.BK": dn_stock}
+rk = SW.rank_universe(pr, bench)
+check("rank_cols", {"หุ้น", "บักเก็ต", "Regime", "ConfL",
+      "ห่าง trigger (ATR)"} <= set(rk.columns))
+check("rank_len2", len(rk) == 2)
+check("rank_dn_avoid", rk.loc[rk["หุ้น"] == "AAV", "บักเก็ต"].iloc[0]
+      == SW.BUCKET_ORDER[3])
+check("rank_first_ok", rk.iloc[0]["บักเก็ต"] in SW.BUCKET_ORDER[:3],
+      rk.iloc[0]["บักเก็ต"])
+
+# ---------- gold nights (7-day mode) ----------
+check("gold_nights", G.nights_for(3, False) == 3 and G.nights_for(1, False) == 1
+      and G.nights_for(6, True) == 1 and G.nights_for(3, True) == 1)
 
 print(f"\n== {ok} passed, {fail} failed ==")
 raise SystemExit(1 if fail else 0)

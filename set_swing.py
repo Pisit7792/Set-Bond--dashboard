@@ -426,3 +426,70 @@ def backtest(fr: pd.DataFrame, p: SwingParams = None,
             else float("nan"),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# จัดลำดับทั้ง universe เป็นบักเก็ต (Long-only ตามค่าตั้งต้น v5.11)
+# ---------------------------------------------------------------------------
+BUCKET_ORDER = ["🟢 ควรซื้อ (สัญญาณวันนี้)", "🟡 ใกล้จุดซื้อ (≤1 ATR)",
+                "⚪ Wait", "🔴 ควรปล่อย/เลี่ยง"]
+
+
+def rank_universe(prices: dict, bench_close, p: SwingParams = None,
+                  max_dist_atr: float = 1.0) -> pd.DataFrame:
+    """สแกนทุกตัวด้วยกติกา v5.11 แล้วจัดบักเก็ต — เพื่อจัดคิวทำการบ้าน
+    ไม่ใช่คำสั่งซื้อ/ขาย: '🔴 ควรปล่อย/เลี่ยง' = ไม่เข้าไม้ใหม่ (หุ้นใต้ SMA200
+    หรือตกเกณฑ์โครงสร้าง) — ของที่ถืออยู่ให้ยึด stop ตามแผนเดิม"""
+    p = p or SwingParams()
+    rows = []
+    for tk, df in prices.items():
+        try:
+            if len(df) < 260:
+                continue
+            fr = compute_frame(df, bench_close, tk, p)
+            r = fr.iloc[-1]
+            reg = "UP" if r["regime_up"] else ("DOWN" if r["regime_dn"] else "FLAT")
+            stk_dn = bool(r["Close"] < r["sma_r"]) if r["sma_r"] == r["sma_r"] else False
+            atr_ok = r["atr"] == r["atr"] and r["atr"] > 0
+            dist = (r["swing_hi"] - r["Close"]) / r["atr"] if atr_ok else float("nan")
+            soft_ok = (not r["vol_shock"]) and bool(r["ceil_ok"]) and (not r["in_blk"])
+            struct_ok = bool(r["liq_ok"]) and bool(r["price_ok"])
+            if bool(r["long_cond"]):
+                b, why = BUCKET_ORDER[0], "เงื่อนไขครบเมื่อปิดแท่ง — เข้า open ถัดไปตามกติกา"
+            elif not struct_ok:
+                b, why = BUCKET_ORDER[3], ("ต่ำกว่าพื้นสภาพคล่อง" if not r["liq_ok"]
+                                           else "ราคาต่ำกว่า 2 บาท (tick band)")
+            elif stk_dn:
+                b, why = BUCKET_ORDER[3], "หุ้นใต้ SMA200 (ขาลง)"
+            elif reg == "UP" and bool(r["score_up"]) and soft_ok \
+                    and dist == dist and 0 < dist <= max_dist_atr:
+                b, why = BUCKET_ORDER[1], f"ห่าง trigger {dist:.1f} ATR"
+            else:
+                if reg != "UP":
+                    why = "หุ้นเหนือ SMA200 แต่ดัชนีไม่หนุน (regime flat)"
+                elif not r["score_up"]:
+                    why = f"confluence อ่อน ({int(r['conf_l'])}/55)"
+                elif not soft_ok:
+                    why = ("vol shock" if r["vol_shock"] else
+                           "ceiling ใกล้" if not r["ceil_ok"] else "หน้าต่างงบ/XD")
+                else:
+                    why = (f"รอเบรก ({dist:.1f} ATR)" if dist == dist else "รอเบรก")
+                b = BUCKET_ORDER[2]
+            rows.append({
+                "หุ้น": tk.replace(".BK", ""), "บักเก็ต": b, "Regime": reg,
+                "ConfL": int(r["conf_l"]) if r["conf_l"] == r["conf_l"] else 0,
+                "ห่าง trigger (ATR)": round(float(dist), 2) if dist == dist else None,
+                "ราคา": round(float(r["Close"]), 2),
+                "ADV20 (ลบ.)": round(float(r["liq_val"]) / 1e6, 1)
+                if r["liq_val"] == r["liq_val"] else None,
+                "เหตุผลย่อ": why})
+        except Exception:
+            continue
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    order = {b: i for i, b in enumerate(BUCKET_ORDER)}
+    out["_o"] = out["บักเก็ต"].map(order)
+    out = out.sort_values(["_o", "ConfL"], ascending=[True, False]) \
+             .drop(columns="_o").reset_index(drop=True)
+    return out

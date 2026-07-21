@@ -50,6 +50,7 @@ DISCLAIMER = ("เครื่องมือเพื่อการศึก�
 ZONES = {
     "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "Fund Flow นักลงทุน",
                           "SET Swing v5.11 + Context",
+                          "Scan หุ้น Overall",
                           "สแกน SET100", "กราฟรายตัว",
                           "RRG", "Backtest + ตรวจสอบ", "Scenario ไทย",
                           "ฤดูกาล (TOM)", "ต้นทุนไทย"],
@@ -138,13 +139,13 @@ def load_flows():
 
 
 @st.cache_data(ttl=3600, show_spinner="ดึงราคาทองคำ + สินทรัพย์ที่ใช้กรอง...")
-def C_gold_bundle(period: str, need_carry: bool):
+def C_gold_bundle(sym: str, period: str, need_carry: bool):
     def _close(d):
         if d is None or d.empty or "Close" not in d.columns:
             return None
         s = d["Close"].dropna()
         return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
-    xau = SE.load_single("GC=F", period)
+    xau = SE.load_single(sym, period)
     dxy = _close(SE.load_single("DX-Y.NYB", period))
     jpy = _close(SE.load_single("USDJPY=X", period)) if need_carry else None
     vix = _close(SE.load_single("^VIX", period)) if need_carry else None
@@ -414,44 +415,75 @@ def page_set_scan():
 
 
 def page_set_chart():
+    from plotly.subplots import make_subplots
     names = sorted(set_prices.keys())
-    pick = st.selectbox("เลือกหุ้น", names, format_func=lambda s: s.replace(".BK", ""))
+    pick = st.selectbox("เลือกหุ้น", names,
+                        format_func=lambda s: s.replace(".BK", ""))
+    tkr = pick.replace(".BK", "")
     d = set_prices[pick]
-    c = d["Close"].dropna()
+    swp = SW.SwingParams()
+    fr = SW.compute_frame(d, bench_close, tkr, swp)
+    r = fr.iloc[-1]
+    reg = "UP 🟢" if r["regime_up"] else ("DOWN 🔴" if r["regime_dn"] else "FLAT ⚪")
+    dist_t = ((r["swing_hi"] - r["Close"]) / r["atr"]) if r["atr"] > 0 else float("nan")
+    st.caption(f"มุมมองแบบสคริปต์ SET Swing v5.11 — Regime {reg} · ConfL "
+               f"{int(r['conf_l'])}/100 (thr 55) · trigger {r['swing_hi']:.2f} "
+               f"(ห่าง {dist_t:.1f} ATR) · stop อ้างอิง {r['sl_dist']:.2f} บาท (2 ATR)")
+    show = fr.tail(300)
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
-                        row_heights=[0.62, 0.2, 0.18], vertical_spacing=0.03)
-    fig.add_trace(go.Candlestick(x=d.index, open=d["Open"], high=d["High"],
-                                 low=d["Low"], close=d["Close"], name="ราคา"),
+                        row_heights=[0.62, 0.20, 0.18], vertical_spacing=0.03)
+    fig.add_trace(go.Candlestick(x=show.index, open=show["Open"],
+                                 high=show["High"], low=show["Low"],
+                                 close=show["Close"], name="ราคา"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=show.index, y=show["sma_r"], name="Regime SMA200",
+                             line=dict(width=2, color="orange")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=show.index, y=show["swing_hi"], name="แนวเบรก 20",
+                             line=dict(width=1, color="purple", shape="hv")),
                   row=1, col=1)
-    for n_, dash in [(20, "solid"), (50, "dash"), (200, "dot")]:
-        fig.add_trace(go.Scatter(x=c.index, y=SE.sma(c, n_), name=f"SMA{n_}",
-                                 line=dict(width=1, dash=dash)), row=1, col=1)
-    if "Volume" in d.columns:
-        fig.add_trace(go.Bar(x=d.index, y=d["Volume"], name="ปริมาณ", opacity=0.5),
-                      row=2, col=1)
-    fig.add_trace(go.Scatter(x=c.index, y=SE.rsi_series(c), name="RSI(14)",
-                             line=dict(width=1)), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dot", line_width=1, row=3, col=1)
-    fig.add_hline(y=30, line_dash="dot", line_width=1, row=3, col=1)
-    fig.update_layout(height=620, xaxis_rangeslider_visible=False,
+    fig.add_trace(go.Scatter(x=show.index, y=show["swing_lo"], name="แนวหลุด 20",
+                             line=dict(width=1, color="maroon", dash="dot",
+                                       shape="hv")), row=1, col=1)
+    chand = show["High"].rolling(swp.tr_len).max() - show["atr"] * swp.tr_mlt
+    fig.add_trace(go.Scatter(x=show.index, y=chand,
+                             name="Chandelier 22/3 (อ้างอิง)",
+                             line=dict(width=1, color="#888", dash="dash")),
+                  row=1, col=1)
+    ptsL = show[show["long_cond"]]
+    if len(ptsL):
+        fig.add_trace(go.Scatter(x=ptsL.index, y=ptsL["Low"] * 0.995,
+                                 mode="markers", name="สัญญาณ L",
+                                 marker=dict(symbol="triangle-up", size=10,
+                                             color="#2c7")), row=1, col=1)
+    ptsS = show[show["short_cond"]]
+    if len(ptsS):
+        fig.add_trace(go.Scatter(x=ptsS.index, y=ptsS["High"] * 1.005,
+                                 mode="markers", name="สัญญาณ S",
+                                 marker=dict(symbol="triangle-down", size=10,
+                                             color="#e55")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=show.index, y=show["conf_l"], name="Confluence L",
+                             line=dict(width=1.2)), row=2, col=1)
+    fig.add_hline(y=swp.conf_min, line_dash="dot", line_width=1, row=2, col=1)
+    if "Volume" in show.columns:
+        fig.add_trace(go.Bar(x=show.index, y=show["Volume"], name="ปริมาณ",
+                             opacity=0.5), row=3, col=1)
+    fig.update_layout(height=640, xaxis_rangeslider_visible=False,
                       margin=dict(l=10, r=10, t=30, b=10),
                       legend=dict(orientation="h"))
+    fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     plot(fig)
-    explain_box("อ่านกราฟอย่างไร — และอย่าอ่านเกินจริงอย่างไร",
-                "- แท่งเทียน: เขียว = ปิด>เปิด | ไส้ = high/low ของวัน\n"
-                "- SMA20/50/200 = แนวโน้มสั้น/กลาง/ยาว\n"
-                "- RSI >70 ร้อนแรง / <30 อ่อนแรง — เป็น *บริบท* "
-                "(หลักฐานว่า RSI เดี่ยวๆ ทำกำไรหลังต้นทุน: **อ่อน**)\n"
-                "- กราฟใช้หา 'จังหวะ' ของหุ้นที่ทำการบ้านพื้นฐานแล้ว "
-                "ไม่ใช่เครื่องตัดสินคุณภาพกิจการ")
-
+    explain_box("อ่านจอนี้แบบ v5.11",
+                "เส้นส้ม = SMA200 (regime) | เส้นม่วง/แดง hv = แนวเบรก/หลุด 20 แท่ง "
+                "(BOS) | เส้นเทา dash = Chandelier 22/3 อ้างอิง (ตอนถือจริง ratchet "
+                "ขึ้นอย่างเดียวจากจุดเข้า) | ▲/▼ = แท่งที่เงื่อนไขครบ → ลงมือ *open "
+                "แท่งถัดไป* เสมอ | แถวกลาง Confluence L (mom35+ER25+vol20+ใกล้ high "
+                "252 = 20) เทียบเส้น 55")
 
 def page_set_rrg():
     st.subheader("RRG — แผนที่ความแข็งแรงเทียบดัชนี (ภาพรวม ไม่ใช่สัญญาณ)")
     st.warning("สูตรเป็นการประมาณ (ไม่ใช่ JdK ต้นฉบับซึ่งเป็นกรรมสิทธิ์) และไม่มี "
                "peer-review ว่า RRG เดี่ยวๆ ทำกำไร — ใช้เป็น situational awareness")
     picks = st.multiselect("เลือกหุ้น (≤ 12 อ่านง่าย)", sorted(set_prices.keys()),
-                           default=sorted(set_prices.keys())[:8],
+                           default=_overall_default(),
                            format_func=lambda s: s.replace(".BK", ""))
     pts = SE.compute_rrg({t: set_prices[t] for t in picks}, bench_close)
     if not pts:
@@ -1180,53 +1212,109 @@ def page_set_flow():
         st.dataframe(fdf.sort_index(ascending=False).head(15)
                      .rename(columns=FL.TH_NAMES))
 
-    st.markdown("#### ➕ เพิ่ม/แก้ข้อมูลรายวัน")
-    nx = last + pd.offsets.BDay(1)
+    st.markdown("#### ➕ เพิ่ม / แก้ไขข้อมูลรายวัน")
     today = pd.Timestamp.today().normalize()
+    dsel = st.date_input("วันที่ (ค่าตั้งต้น = วันล่าสุดที่มีข้อมูล)",
+                         value=last.date(), max_value=today.date(), key="fl_d")
+    ts = pd.Timestamp(dsel)
+    exists = ts in fdf.index
+    if exists:
+        row = fdf.loc[ts]
+        st.caption(f"📌 มีข้อมูลวันนี้แล้ว — ฟอร์มแสดงค่าเดิม แก้แล้วกดบันทึกเพื่อ"
+                   f"เขียนทับ | Institute {row['Institute']:+,.2f} · "
+                   f"Foreign {row['Foreign']:+,.2f} · Retail {row['Retail']:+,.2f}")
+        d_in, d_fo, d_re = (float(row["Institute"]), float(row["Foreign"]),
+                            float(row["Retail"]))
+        d_ix = float(row[FL.IDX_COL]) if row[FL.IDX_COL] == row[FL.IDX_COL] else 0.0
+        d_ch = float(row[FL.CHG_COL]) if row[FL.CHG_COL] == row[FL.CHG_COL] else 0.0
+    else:
+        st.caption("🆕 ยังไม่มีข้อมูลวันที่นี้ — กรอกใหม่ได้เลย")
+        d_in = d_fo = d_re = d_ix = d_ch = 0.0
+    k = str(dsel)
     with st.form("flow_add"):
-        c1, c2 = st.columns([1, 2])
-        dsel = c1.date_input("วันที่", value=min(nx, today).date(),
-                             max_value=today.date())
-        ow = c1.checkbox("เขียนทับถ้าวันที่ซ้ำ", value=False)
-        c3, c4, c5 = c2.columns(3)
-        v_in = c3.number_input("Institute (ลบ.)", value=0.0, step=50.0,
-                               format="%.2f")
-        v_fo = c4.number_input("Foreign (ลบ.)", value=0.0, step=50.0,
-                               format="%.2f")
-        v_re = c5.number_input("Retail (ลบ.)", value=0.0, step=50.0,
-                               format="%.2f")
-        c6, c7 = c2.columns(2)
-        v_ix = c6.number_input("Set Index (เว้น 0 = ไม่กรอก)", value=0.0,
-                               step=1.0, format="%.2f")
-        v_ch = c7.number_input("Set Change (จุด)", value=0.0, step=0.5,
-                               format="%.2f")
-        sub_btn = st.form_submit_button("💾 บันทึกลงไฟล์")
+        c3, c4, c5 = st.columns(3)
+        v_in = c3.number_input("Institute (ลบ.)", value=d_in, step=50.0,
+                               format="%.2f", key=f"fi_{k}")
+        v_fo = c4.number_input("Foreign (ลบ.)", value=d_fo, step=50.0,
+                               format="%.2f", key=f"ff_{k}")
+        v_re = c5.number_input("Retail (ลบ.)", value=d_re, step=50.0,
+                               format="%.2f", key=f"fr_{k}")
+        c6, c7 = st.columns(2)
+        v_ix = c6.number_input("Set Index (0 = ไม่กรอก)", value=d_ix, step=1.0,
+                               format="%.2f", key=f"fx_{k}")
+        v_ch = c7.number_input("Set Change (จุด)", value=d_ch, step=0.5,
+                               format="%.2f", key=f"fc_{k}")
+        sub_btn = st.form_submit_button(
+            "💾 บันทึกลง CSV" + (" (เขียนทับวันเดิม)" if exists else ""))
     if sub_btn:
         ssum = v_in + v_fo + v_re
         if abs(ssum) > 1.0:
-            st.warning(f"3 กลุ่มรวมกัน = {ssum:+,.2f} ลบ. (ไฟล์เดิมรวม ≈ 0 เสมอ) "
-                       "— บันทึกให้ตามที่กรอก แต่โปรดตรวจตัวเลขอีกครั้ง")
+            st.warning(f"3 กลุ่มรวม = {ssum:+,.2f} ลบ. (ไฟล์เดิมรวม ≈ 0 เสมอ) — "
+                       "บันทึกตามที่กรอก โปรดตรวจตัวเลขอีกครั้ง")
         d2, okk, msg = FL.append_or_update(
-            fdf, pd.Timestamp(dsel), v_in, v_fo, v_re,
+            fdf, ts, v_in, v_fo, v_re,
             set_index=(None if v_ix == 0 else v_ix),
-            set_change=(None if v_ch == 0 and v_ix == 0 else v_ch),
-            overwrite=ow)
+            set_change=(None if (v_ch == 0 and v_ix == 0) else v_ch),
+            overwrite=True)
         if okk:
             try:
                 FL.save_flow_csv(d2, FLOW_PATH)
                 st.success("✅ " + msg)
             except Exception as e_:
-                st.error(f"เขียนไฟล์ไม่ได้ ({e_}) — ใช้ปุ่มดาวน์โหลดด้านล่างแทน")
+                st.error(f"เขียนไฟล์ไม่ได้ ({e_}) — ใช้ปุ่มดาวน์โหลดแทน")
             st.rerun()
         else:
             st.error(msg)
     st.download_button("⬇️ ดาวน์โหลด Set_update.csv (ฉบับล่าสุด)",
                        FL.to_csv_bytes(fdf), "Set_update.csv", "text/csv")
-    st.info("💾 **ความถาวรของข้อมูล (พูดตรงๆ):** บนเครื่องตัวเอง การบันทึกถาวรทันที "
-            "| บน Streamlit Cloud ไฟล์อยู่ได้จนกว่าเครื่องจะ restart/redeploy — "
-            "หลังเพิ่มข้อมูลจึงควร **ดาวน์โหลดแล้วอัปกลับ GitHub** (Add file → "
-            "Upload files ทับไฟล์เดิม) เพื่อเก็บถาวร")
-
+    with st.expander("☁️ อัปโหลดขึ้น GitHub (commit ทับไฟล์ใน repo)"):
+        st.caption("ใช้ GitHub token ที่มีสิทธิ์เขียน (Fine-grained: Contents → "
+                   "Read and write เฉพาะ repo นี้) — token ใช้ครั้งนี้ ไม่ถูกเก็บ | "
+                   "⚠️ commit สำเร็จจะทำให้ Streamlit Cloud redeploy อัตโนมัติ "
+                   "(แอปรีสตาร์ต ~1-2 นาที ข้อมูลบนจอหายชั่วคราว)")
+        g1, g2 = st.columns(2)
+        gh_owner = g1.text_input("Owner", "Pisit7792")
+        gh_repo = g2.text_input("Repo", "Set-Bond--dashboard")
+        g3, g4 = st.columns(2)
+        gh_branch = g3.text_input("Branch", "main")
+        gh_path = g4.text_input("Path ไฟล์ใน repo", "Set_update.csv")
+        gh_tok = st.text_input("GitHub token", type="password")
+        if st.button("🚀 Commit ไฟล์ล่าสุดขึ้น GitHub"):
+            if not gh_tok.strip():
+                st.error("ต้องใส่ token ก่อน")
+            else:
+                import base64
+                import requests as _rq
+                api = (f"https://api.github.com/repos/{gh_owner.strip()}/"
+                       f"{gh_repo.strip()}/contents/{gh_path.strip()}")
+                hd = {"Authorization": f"Bearer {gh_tok.strip()}",
+                      "Accept": "application/vnd.github+json"}
+                try:
+                    sha = None
+                    r0 = _rq.get(api, headers=hd,
+                                 params={"ref": gh_branch.strip()}, timeout=20)
+                    if r0.status_code == 200:
+                        sha = r0.json().get("sha")
+                    payload = {
+                        "message": f"update Set_update.csv (ถึง {last:%d/%m/%Y})",
+                        "content": base64.b64encode(
+                            FL.to_csv_bytes(fdf)).decode(),
+                        "branch": gh_branch.strip()}
+                    if sha:
+                        payload["sha"] = sha
+                    r1 = _rq.put(api, headers=hd, json=payload, timeout=30)
+                    if r1.status_code in (200, 201):
+                        url = r1.json().get("commit", {}).get("html_url", "")
+                        st.success("✅ Commit สำเร็จ"
+                                   + (f" — [ดู commit]({url})" if url else ""))
+                    else:
+                        st.error(f"GitHub ตอบ {r1.status_code}: "
+                                 f"{str(r1.json().get('message', r1.text))[:200]}")
+                except Exception as e_:
+                    st.error(f"เชื่อมต่อ GitHub ไม่ได้: {e_}")
+    st.info("💾 ความถาวร: บนเครื่องตัวเอง = ถาวรทันที | บน Streamlit Cloud ไฟล์อยู่"
+            "จนเครื่อง restart — ทางถาวรคือปุ่ม GitHub ข้างบน (แนะนำ) หรือ"
+            "ดาวน์โหลดแล้วอัปทับเองบนเว็บ GitHub")
 
 def page_gold():
     st.subheader("ทองคำ — XAU Research Trend Pullback v6.4 (พอร์ตจากสคริปต์ของคุณ)")
@@ -1236,6 +1324,13 @@ def page_gold():
                "trials สูงไว้ก่อน (3) Tier C ของสคริปต์ (real-yield, gold-DXY "
                "inverse) **จงใจไม่โค้ด** ตามต้นฉบับ (4) เป้า validate ของสคริปต์เอง: "
                "**30-50 เทรดจริงใน journal, PF > 1.5 หลัง swap**")
+    gsrc = st.radio("แหล่งข้อมูลราคา",
+                    ["PAXG-USD — โทเคนอิงทอง เทรดทุกวัน 24/7 (แสดง/คำนวณทุกวันตามที่ขอ)",
+                     "GC=F — ฟิวเจอร์ส COMEX (จันทร์-ศุกร์)"], 0, horizontal=True)
+    gsym = "PAXG-USD" if gsrc.startswith("PAXG") else "GC=F"
+    st.caption("ตรงไปตรงมา: PAXG = โทเคนอิงทองจริง 1 oz ราคาแนบ spot มาก "
+               "(อาจมี premium/discount เล็กน้อย) — โหมดนี้อินดิเคเตอร์คำนวณบน"
+               "แท่งจริง 7 วัน/สัปดาห์ ATR/SMA จึงต่างจากฟิวเจอร์สเล็กน้อย")
     c1, c2, c3, c4 = st.columns(4)
     g_period = c1.selectbox("ช่วงข้อมูล", ["3y", "5y", "10y"], 1)
     spread_c = c2.number_input("Spread ไป-กลับ (¢/oz)", 0.0, 200.0, 25.0, 5.0)
@@ -1251,9 +1346,9 @@ def page_gold():
     p = G.GoldParams(spread_cents=spread_c, swap_long_oz=swap_l,
                      swap_short_oz=swap_s, use_carry=use_carry,
                      use_er_gate=use_er, use_htf_w=use_w, use_y10=use_y10)
-    xau, dxy, jpy, vix = C_gold_bundle(g_period, use_carry)
+    xau, dxy, jpy, vix = C_gold_bundle(gsym, g_period, use_carry)
     if xau.empty or len(xau) < 320:
-        st.error("ดึงราคาทอง (GC=F) ไม่ได้/สั้นเกิน — ตรวจอินเทอร์เน็ตแล้วลองใหม่")
+        st.error(f"ดึงราคาทอง ({gsym}) ไม่ได้/สั้นเกิน — ลองสลับแหล่งข้อมูลหรือตรวจเน็ต")
         return
     y10s = S("DGS10") if (use_y10 and g_on and not is_demo) else None
     if use_y10 and (y10s is None or not len(y10s)):
@@ -1263,6 +1358,7 @@ def page_gold():
     fr = G.compute_frame(xau, dxy_close=dxy, y10_close=y10s,
                          usdjpy_close=jpy, vix_close=vix, p=p)
     stt = G.state_today(fr, p)
+    seven_g = bool((fr.index.weekday >= 5).any())
     if dxy is None:
         st.caption("DXY ดึงไม่ได้ — veto ผ่านอัตโนมัติ (fail-open ตามต้นฉบับ)")
 
@@ -1292,7 +1388,7 @@ def page_gold():
     figg = go.Figure()
     figg.add_trace(go.Candlestick(x=show.index, open=show["Open"],
                                   high=show["High"], low=show["Low"],
-                                  close=show["Close"], name="GC=F"))
+                                  close=show["Close"], name=gsym))
     figg.add_trace(go.Scatter(x=show.index, y=show["reg_sma"], name="SMA200[1]",
                               line=dict(width=1.4, color="#888")))
     figg.add_trace(go.Scatter(x=show.index, y=show["pb_ema"], name="EMA21",
@@ -1310,10 +1406,13 @@ def page_gold():
     figg.update_layout(height=460, xaxis_rangeslider_visible=False,
                        margin=dict(l=10, r=10, t=30, b=10),
                        legend=dict(orientation="h"))
+    if not seven_g:
+        figg.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     plot(figg)
 
     st.markdown("#### Backtest (สัญญาณปิดแท่ง → เข้า open แท่งถัดไป, "
-                "หัก spread ทุกเทรด, แยกบัญชี swap)")
+                "หัก spread ทุกเทรด, แยกบัญชี swap"
+                + (" · โหมด 7 วัน: swap 1 คืน/แท่ง = รวมสัปดาห์เทียบเท่า 5 คืน+triple พุธ" if seven_g else "") + ")")
     bt = G.backtest(fr, p)
     lvl, vmsg = G.validation_verdict(bt)
     {"fail": st.error, "warn": st.warning, "ok": st.success}[lvl]("🧮 " + vmsg)
@@ -1397,6 +1496,21 @@ def page_swing():
         for cline in mc["calendar"]:
             st.caption("🗓️ " + cline)
         st.caption("⚠️ " + mc["note"])
+    st.markdown("#### 📋 จัดลำดับทั้ง SET100 ตามกติกา v5.11 (Long only)")
+    rank = C_swing_rank(set_period, tuple(sorted(set_prices)),
+                        str(bench_close.index[-1].date()))
+    if rank.empty:
+        st.info("จัดลำดับไม่ได้ (ข้อมูลไม่พอ)")
+    else:
+        cnt = rank["บักเก็ต"].value_counts()
+        mR = st.columns(4)
+        for _i, _b in enumerate(SW.BUCKET_ORDER):
+            mR[_i].metric(_b, int(cnt.get(_b, 0)))
+        fsel = st.selectbox("กรองบักเก็ต", ["ทั้งหมด"] + SW.BUCKET_ORDER, 0)
+        shr = rank if fsel == "ทั้งหมด" else rank[rank["บักเก็ต"] == fsel]
+        st.dataframe(shr, hide_index=True, height=360)
+        st.caption("⚠️ 🔴 = ไม่เข้าไม้ใหม่ — *ไม่ใช่คำสั่งขายของที่ถืออยู่* "
+                   "(ของเดิมยึด stop ตามแผน) | จัดคิวทำการบ้าน ไม่ใช่คำแนะนำลงทุน")
     st.divider()
     names = sorted(set_prices.keys())
     c1, c2, c3 = st.columns([1.2, 1, 1.4])
@@ -1545,6 +1659,72 @@ def page_crypto():
     st.caption("⚠️ " + CR.TOOL_DISCLAIMER)
 
 
+
+
+@st.cache_data(ttl=1800, show_spinner="สแกน Swing ทั้ง SET100 (ครั้งแรก ~15-30 วิ)...")
+def C_swing_rank(period: str, tickers_key: tuple, bench_key: str):
+    return SW.rank_universe(set_prices, bench_close)
+
+
+def _overall_default():
+    picks = st.session_state.get("overall_picks")
+    if picks:
+        lst = [t for t in picks if t in set_prices][:10]
+        if lst:
+            return lst
+    try:
+        rank = C_swing_rank(set_period, tuple(sorted(set_prices)),
+                            str(bench_close.index[-1].date()))
+        good = rank[rank["บักเก็ต"].isin(SW.BUCKET_ORDER[:2])]["หุ้น"].tolist()
+        lst = [t + ".BK" for t in good if t + ".BK" in set_prices][:10]
+        if lst:
+            return lst
+    except Exception:
+        pass
+    return sorted(set_prices.keys())[:8]
+
+
+def page_overall():
+    st.subheader("Scan หุ้น Overall — Swing v5.11 × ปัจจัย 4 ตัว")
+    st.caption("กติกาเปิดเผย: 'น่าลงทุนวันนี้' = ผ่านประตูสภาพคล่อง + Swing บักเก็ต "
+               "🟢/🟡 + คะแนนปัจจัยรวม (composite z) ≥ 0 — ทั้งหมดคือคิวทำการบ้าน "
+               "ไม่ใช่คำสั่งซื้อ และเกณฑ์รวมนี้ยังไม่ผ่าน validation เชิงประจักษ์")
+    rank = C_swing_rank(set_period, tuple(sorted(set_prices)),
+                        str(bench_close.index[-1].date()))
+    board = SE.build_scoreboard(set_prices, bench_close, min_turn_m * 1e6)
+    if rank.empty or board.empty:
+        st.error("ข้อมูลไม่พอสำหรับจัดลำดับ")
+        return
+    j = rank.merge(board[["ticker", "composite", "n_factors", "liq_pass"]],
+                   left_on="หุ้น", right_on="ticker", how="left") \
+            .drop(columns="ticker")
+    j["composite"] = pd.to_numeric(j["composite"], errors="coerce").round(2)
+    good = j[j["บักเก็ต"].isin(SW.BUCKET_ORDER[:2])
+             & j["liq_pass"].fillna(False) & (j["composite"] >= 0)]
+    sig = good[good["บักเก็ต"] == SW.BUCKET_ORDER[0]]
+    near = good[good["บักเก็ต"] == SW.BUCKET_ORDER[1]]
+    st.session_state["overall_picks"] = [t + ".BK" for t in good["หุ้น"]][:12]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🟢 สัญญาณวันนี้", len(sig))
+    c2.metric("🟡 ใกล้จุด (≤1 ATR)", len(near))
+    c3.metric("ผ่านเกณฑ์รวม", len(good))
+    if len(sig):
+        st.markdown("**🟢 เงื่อนไขครบเมื่อปิดแท่งล่าสุด — ตามกติกาเข้า open แท่งถัดไป:**")
+        st.dataframe(sig.drop(columns=["บักเก็ต"]), hide_index=True)
+    if len(near):
+        st.markdown("**🟡 ใกล้จุดซื้อ — เฝ้ารอเบรกจริง อย่าดักหน้า:**")
+        st.dataframe(near.drop(columns=["บักเก็ต"]), hide_index=True)
+    if not len(good):
+        st.info("วันนี้ไม่มีตัวเข้าเกณฑ์รวม — เป็นเรื่องปกติของระบบเบรกเอาต์ "
+                "(กติกาบอกให้รอ ไม่ใช่ให้หาเรื่องเข้า)")
+    with st.expander("ตารางรวมทั้ง SET100 (Swing × ปัจจัย)"):
+        st.dataframe(j, hide_index=True, height=460)
+    st.caption("⚠️ composite z ≥ 0 = อยู่ครึ่งบนของตะกร้า ณ วันนี้เท่านั้น "
+               "ไม่ใช่หลักฐานผลตอบแทน | เวิร์กโฟลว์: หน้านี้คัดตัว → Stock Context "
+               "เช็กโครงสร้าง → รอกติกา Swing จริง | หุ้นชุดนี้ถูกใช้เป็นค่าตั้งต้น"
+               "ของหน้า RRG ด้วย")
+
+
 # ===========================================================================
 # Routing
 # ===========================================================================
@@ -1552,6 +1732,7 @@ ROUTES = {
     "ภาพรวม SET + Overlay": page_set_overview,
     "Fund Flow นักลงทุน": page_set_flow,
     "SET Swing v5.11 + Context": page_swing,
+    "Scan หุ้น Overall": page_overall,
     "สแกน SET100": page_set_scan,
     "กราฟรายตัว": page_set_chart,
     "RRG": page_set_rrg,
