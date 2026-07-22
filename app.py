@@ -27,14 +27,17 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 import bridge as BR
+import countries as CO
 import data_sources as D
 import engine as E
 import explain as X
 import flows as FL
 import gold as G
 import meeting as MT
+import model_history as MH
 import models6 as M
 import scenario as SC
+import worldmon as WM
 import crypto as CR
 import set_context as CX
 import set_engine as SE
@@ -56,7 +59,8 @@ ZONES = {
                           "ฤดูกาล (TOM)", "ต้นทุนไทย"],
     "🌍 Global (Bond Crisis)": ["ภาพรวมโลก", "โมเดลทำกำไร (6)", "สัญญาณ Global",
                                 "จำลองสถานการณ์", "วิกฤตแบงก์รัน", "ข่าวสาร",
-                                "ห้องประชุม AI", "ข้อมูลมหภาค", "Trend สินทรัพย์โลก",
+                                "ห้องประชุม AI", "ข้อมูลมหภาค", "รายประเทศ (Bond)",
+                                "Trend สินทรัพย์โลก", "World Monitor",
                                 "ทองคำ XAU (RTP v6.4)", "คริปโต (BTC/ETH)"],
     "📖 ร่วม": ["Trade Log & สถิติ", "คู่มืออ่านค่า", "ข้อจำกัด & จุดพัฒนา"],
 }
@@ -223,6 +227,7 @@ def S(sid: str) -> pd.Series:
 
 composite = float("nan")
 subs, warnings_g, mscores, deltas = {}, [], {}, {}
+hist30 = pd.DataFrame()
 sig_g = {"signals": [], "conflicts": [], "skipped": []}
 spread_latest, rec_prob, inv_days = float("nan"), float("nan"), 0
 vol_name, breadth_g = "-", float("nan")
@@ -266,6 +271,15 @@ if g_on:
     ckey = ("demo" if is_demo else "live") + str(
         t10y3m.index[-1].date() if len(t10y3m) else "")
     deltas = C_deltas(ckey)
+
+    @st.cache_data(ttl=3600, show_spinner="คำนวณประวัติคะแนนรายวัน 30 วัน...")
+    def C_hist30(cache_key: str) -> pd.DataFrame:
+        try:
+            return MH.all_daily_history(MDATA, tail_days=30)
+        except Exception:
+            return pd.DataFrame()
+
+    hist30 = C_hist30(ckey)
     if len(g_prices):
         sig_g = SG.build_signals(mscores, M.ASSET_IMPACT, g_prices, D.YF_ASSETS)
 
@@ -710,6 +724,98 @@ def page_g_overview():
 def page_g_models():
     if need_global():
         return
+    # --- ประวัติคะแนนโมเดล (30 วัน): เส้นคำนวณย้อนหลัง + สมุดบันทึกสด ---
+    st.subheader("📈 ประวัติคะแนนโมเดล (30 วัน)")
+    if hist30.empty:
+        st.info("ยังคำนวณเส้นย้อนหลังไม่ได้ (ข้อมูลไม่พอ/ดึงไม่สำเร็จ)")
+    else:
+        fig = go.Figure()
+        for k in [c for c in M.MODEL_DEFS if c in hist30.columns]:
+            fig.add_trace(go.Scatter(x=hist30.index, y=hist30[k],
+                                     mode="lines", name=M.MODEL_DEFS[k]["th"]))
+        fig.add_hline(y=SG.SIGNAL_THRESHOLD, line_dash="dash", line_color="#888",
+                      annotation_text=f"เกณฑ์สัญญาณ ({SG.SIGNAL_THRESHOLD:.0f})",
+                      annotation_position="top left")
+        fig.add_hline(y=BR.CAUTION_MODEL, line_dash="dot", line_color="#e6a23c",
+                      annotation_text=f"overlay ระวัง — โมเดลเสี่ยง ({BR.CAUTION_MODEL:.0f})",
+                      annotation_position="bottom left")
+        fig.add_hline(y=BR.RISKOFF_MODEL, line_dash="dot", line_color="#e05252",
+                      annotation_text=f"overlay ตึงตัว ({BR.RISKOFF_MODEL:.0f})",
+                      annotation_position="top right")
+        fig.update_layout(height=380, yaxis_range=[0, 100],
+                          legend=dict(orientation="h", y=-0.25),
+                          margin=dict(l=10, r=10, t=30, b=10))
+        plot(fig)
+        st.caption("⚠️ " + MH.RECOMPUTE_CAVEAT)
+        explain_box("เส้นนี้คำนวณอย่างไร / ต่างจาก Δสัปดาห์ตรงไหน",
+                    "ณ วันทำการ t คะแนน = ค่าเฉลี่ย percentile ของ component ที่มี "
+                    "โดยแต่ละ component เทียบกับ **ประวัติของตัวเองถึงวัน t เท่านั้น** "
+                    "(expanding) — จุดขวาสุดจึงเท่ากับคะแนนในการ์ดด้านล่างวันนี้\n\n"
+                    "ส่วน Δสัปดาห์ในการ์ดใช้อนุกรมรายสัปดาห์ (W-FRI) ของ models6 — "
+                    "คนละความถี่ ตัวเลขจึงต่างกันได้เล็กน้อย ไม่ใช่บั๊ก")
+    with st.expander("💾 สมุดบันทึกสด (track record จริง — สะสมวันต่อวัน)"):
+        st.caption(MH.SNAP_CAVEAT)
+        snap_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 MH.SNAP_FILE)
+        sdf, sprobs = MH.load_snapshots(snap_path)
+        for p_ in sprobs:
+            st.caption("ℹ️ " + p_)
+        mode_now = "demo" if is_demo else "live"
+        today_d = datetime.now().date()
+        if st.button(f"📌 บันทึกคะแนนวันนี้ ({today_d}) — โหมด {mode_now.upper()}"):
+            scores_now = {k: mscores.get(k, {}).get("score", float("nan"))
+                          for k in M.MODEL_DEFS}
+            sdf2, okb, msgb = MH.append_snapshot(sdf, today_d, scores_now,
+                                                 composite, mode_now)
+            if okb:
+                try:
+                    with open(snap_path, "wb") as f_:
+                        f_.write(MH.to_csv_bytes(sdf2))
+                    sdf = sdf2
+                    st.success("✅ " + msgb)
+                except Exception as e_:
+                    st.error(f"เขียนไฟล์ไม่ได้: {e_}")
+            else:
+                st.error("⛔ " + msgb)
+        if len(sdf):
+            show = sdf.copy()
+            show.columns = (["วันที่"] + [M.MODEL_DEFS[k]["th"] for k in M.MODEL_DEFS]
+                            + ["composite", "โหมด"])
+            st.dataframe(show.tail(30), hide_index=True)
+            if len(sdf) >= 2:
+                fig2 = go.Figure()
+                for k in M.MODEL_DEFS:
+                    fig2.add_trace(go.Scatter(
+                        x=pd.to_datetime(sdf["date"]), y=sdf[k],
+                        mode="lines+markers", name=M.MODEL_DEFS[k]["th"]))
+                fig2.update_layout(height=300, yaxis_range=[0, 100],
+                                   legend=dict(orientation="h", y=-0.3),
+                                   margin=dict(l=10, r=10, t=10, b=10))
+                plot(fig2)
+            st.download_button("⬇️ ดาวน์โหลด " + MH.SNAP_FILE,
+                               MH.to_csv_bytes(sdf), file_name=MH.SNAP_FILE,
+                               mime="text/csv")
+            st.markdown("**☁️ เก็บถาวรขึ้น GitHub** (แบบเดียวกับหน้า Fund Flow)")
+            g1_, g2_ = st.columns(2)
+            gh_owner = g1_.text_input("Owner", "Pisit7792", key="mh_owner")
+            gh_repo = g2_.text_input("Repo", "Set-Bond--dashboard", key="mh_repo")
+            g3_, g4_ = st.columns(2)
+            gh_branch = g3_.text_input("Branch", "main", key="mh_branch")
+            gh_path = g4_.text_input("Path ไฟล์ใน repo", MH.SNAP_FILE, key="mh_path")
+            gh_tok = st.text_input("GitHub token", type="password", key="mh_tok")
+            if st.button("🚀 Commit ไฟล์บันทึกขึ้น GitHub"):
+                okc, msgc = MH.github_put_file(
+                    gh_owner, gh_repo, gh_branch, gh_path,
+                    MH.to_csv_bytes(sdf), gh_tok,
+                    f"update {MH.SNAP_FILE} ({today_d})")
+                if okc:
+                    st.success("✅ Commit สำเร็จ"
+                               + (f" — [ดู commit]({msgc})" if msgc else ""))
+                else:
+                    st.error(msgc)
+        else:
+            st.caption("ยังไม่มีบันทึก — กดปุ่มด้านบนเพื่อเริ่ม track record วันแรก")
+    st.divider()
     st.caption("คะแนนจากสูตรเปิดเผย (percentile ตัวชี้วัดจริง) — ตารางได้/เสีย"
                "ประโยชน์คือแนวโน้มอดีต *ไม่ใช่กฎตายตัว*")
     for k in MODEL_ORDER:
@@ -1726,6 +1832,157 @@ def page_overall():
 
 
 # ===========================================================================
+# 🌍 รายประเทศ (Bond) — yield 10 ปี, spread เทียบ US, คะแนนเสี่ยง (heuristic)
+# ===========================================================================
+
+@st.cache_data(ttl=3600, show_spinner="ดึง yield รายประเทศ (FRED fredgraph, ไม่ใช้ key)...")
+def C_country_yields() -> tuple[dict, dict]:
+    """ดึงทุกประเทศที่มี series — คืน ({code: [(date,val)...]}, {code: error})"""
+    fetched, errs = {}, {}
+    for spec in CO.COUNTRIES:
+        if not spec.fred_series:
+            continue
+        try:
+            fetched[spec.code] = CO.fetch_fred_series(spec.fred_series)
+        except Exception as e:
+            errs[spec.code] = str(e)
+    return fetched, errs
+
+
+def page_g_countries():
+    st.caption("yield พันธบัตรรัฐบาล 10 ปีรายประเทศ + spread เทียบ US — หน้านี้"
+               "ดึงข้อมูลเองผ่าน FRED fredgraph (ไม่ใช้ FRED key และทำงานได้แม้"
+               "ปิดฝั่ง Global) | คะแนนเสี่ยงเป็น heuristic สูตรเปิดเผย "
+               "**ยังไม่ผ่าน validation — ไม่ใช่สัญญาณซื้อขาย**")
+    use_demo = st.toggle("โหมด DEMO (ตัวเลขตัวอย่าง — ไม่ใช่ข้อมูลจริง)", value=False)
+
+    # กรอกเองสำหรับประเทศที่ไม่มีแหล่งฟรี
+    if "ctry_manual" not in st.session_state:
+        st.session_state["ctry_manual"] = {}
+    manual = st.session_state["ctry_manual"]
+    with st.expander("✍️ กรอก yield เอง (ประเทศที่ไม่มีแหล่งฟรี) — ติดป้าย MANUAL เสมอ"):
+        st.caption("ใช้เมื่อคุณมีตัวเลขจากแหล่งที่คุณเชื่อถือเอง (เช่น เว็บข้อมูลบอนด์) "
+                   "ระบบจะแสดงวันที่อ้างอิงกำกับ และเตือนว่ายังไม่ได้ตรวจสอบอิสระ | "
+                   "ค่าอยู่ในหน้าจอรอบนี้เท่านั้น (session) ไม่ถูกเก็บถาวร")
+        m1, m2, m3 = st.columns([2, 1, 1])
+        m_code = m1.selectbox("ประเทศ", [c.code for c in CO.COUNTRIES
+                                          if c.fred_series is None],
+                              format_func=lambda c: f"{CO.spec_by_code(c).flag} "
+                                                    f"{CO.spec_by_code(c).name_th}")
+        m_y = m2.number_input("Yield 10Y (%)", 0.01, 59.99, 7.00, 0.05)
+        m_asof = m3.date_input("ข้อมูล ณ วันที่", value=datetime.now().date(),
+                               max_value=datetime.now().date())
+        b1, b2 = st.columns(2)
+        if b1.button("บันทึกค่า (เฉพาะหน้าจอนี้)"):
+            okm, errm = CO.validate_manual(float(m_y), m_asof.isoformat(),
+                                           datetime.now().date())
+            if okm:
+                manual[m_code] = {"y": float(m_y), "asof": m_asof.isoformat()}
+                st.success(f"ใส่ค่า {m_code} = {m_y:.2f}% (ณ {m_asof}) แล้ว")
+            else:
+                st.error(errm)
+        if b2.button("ล้างค่าที่กรอกทั้งหมด"):
+            manual.clear()
+            st.info("ล้างแล้ว")
+
+    fetched, errs = ({}, {}) if use_demo else C_country_yields()
+    if errs:
+        st.warning("ดึงไม่สำเร็จบางประเทศ (แสดงตรง ๆ ไม่กลบ): "
+                   + json.dumps(errs, ensure_ascii=False)[:400])
+    rows = CO.build_rows(fetched, manual, datetime.now().date(), demo=use_demo)
+
+    us_row = next(r for r in rows if r.spec.code == "US")
+    if us_row.y is None:
+        st.error("ยังไม่มีค่า US10Y (ฐานเทียบ) — ดึง FRED ไม่สำเร็จและไม่ได้เปิด DEMO "
+                 "จึงคำนวณ spread/คะแนนไม่ได้")
+    others = [r for r in rows if r.spec.code != "US"]
+    others.sort(key=lambda r: -(r.risk.get("total", -1.0)
+                                if r.risk.get("total") is not None else -1.0))
+
+    def _card(r):
+        with st.container(border=True):
+            head = f"{r.spec.flag} **{r.spec.name_th}** · {r.spec.code}"
+            st.markdown(head)
+            if r.y is None:
+                st.markdown("**— ไม่มีข้อมูล —**")
+                st.caption(r.error or r.spec.note)
+                return
+            tier = r.risk.get("tier", "—")
+            color = {"เสี่ยงต่ำ": "green", "เสี่ยงปานกลาง": "orange",
+                     "เสี่ยงสูง": "red"}.get(tier, "gray")
+            tot = r.risk.get("total")
+            c1, c2 = st.columns([1, 1])
+            c1.metric("คะแนนเสี่ยง (heuristic)",
+                      "—" if tot is None else f"{tot:.0f}")
+            c2.metric("10Y yield", f"{r.y:.2f}%",
+                      (f"{r.spread:+.0f} bps vs US" if r.spread is not None
+                       and r.spec.code != "US" else None), delta_color="off")
+            st.markdown(f":{color}[**{tier}**]")
+            rk = r.risk
+            st.caption(f"ระดับ {rk.get('level_pts', 0):.0f}/40 · "
+                       f"spread {rk.get('spread_pts', 0):.0f}/40 · "
+                       f"แนวโน้ม3ด. {rk.get('trend_pts', 0):.0f}/20"
+                       + ("" if rk.get("trend_known") else " (ไม่มีข้อมูลแนวโน้ม)"))
+            src_th = {"FRED": "FRED", "MANUAL": "กรอกเอง", "DEMO": "DEMO",
+                      "NONE": "—"}[r.source]
+            st.caption(f"แหล่ง: {src_th} · {r.fresh_label}"
+                       + (f" · {CO.FREQ_LABEL[r.spec.freq]}"
+                          if r.source == "FRED" else ""))
+
+    _card(us_row)
+    cols3 = st.columns(3)
+    for i, r in enumerate(others):
+        with cols3[i % 3]:
+            _card(r)
+
+    with st.expander("📐 สูตรคะแนน + สถานะแหล่งข้อมูล (โปร่งใสทั้งหมด)"):
+        st.text(CO.FORMULA_TEXT)
+        st.dataframe(pd.DataFrame(
+            [{"ประเทศ": f"{c.flag} {c.name_th}", "FRED series": c.fred_series or "—",
+              "ความถี่": CO.FREQ_LABEL[c.freq] if c.fred_series else "—",
+              "ยืนยันแล้ว": "✅" if c.verified else ("⚠️ ยัง" if c.fred_series else "—"),
+              "หมายเหตุ": c.note} for c in CO.COUNTRIES]), hide_index=True)
+        if st.button("🧪 ตรวจแหล่งข้อมูลตอนนี้ (ลองดึงทุก series แล้วรายงานตรง ๆ)"):
+            for code, msg in CO.source_check_report():
+                (st.success if msg.startswith("OK") else
+                 (st.error if msg.startswith("FAIL") else st.info))(f"{code}: {msg}")
+    explain_box("ทำไมบางประเทศเป็นรายเดือน/ไม่มีข้อมูล",
+                "yield รายวันของประเทศ EM ไม่มี API ฟรีที่เชื่อถือได้ — ของฟรีที่มีจริง"
+                "คือชุด OECD ผ่าน FRED ซึ่งเป็น **รายเดือนและช้า ~1-2 เดือน** "
+                "(รัสเซียถูกหยุดเผยแพร่หลังปี 2022) ระบบเลือกแสดงความช้าตรง ๆ "
+                "แทนการโชว์ตัวเลขที่ดูสดแต่ตรวจสอบไม่ได้ | spread คิดจาก yield "
+                "คนละสกุลเงิน จึงสะท้อนทั้งความเสี่ยงเครดิต เงินเฟ้อ และค่าเงิน "
+                "ปนกัน — อย่าอ่านเป็น 'ความเสี่ยงผิดนัด' อย่างเดียว")
+
+
+# ===========================================================================
+# 🌐 World Monitor (บริการภายนอก) — iframe + ปุ่มลิงก์สำรองเสมอ
+# ===========================================================================
+
+def page_worldmonitor():
+    import streamlit.components.v1 as components
+    st.caption("แผนที่สถานการณ์โลกจากโปรเจกต์โอเพนซอร์ส World Monitor "
+               "(koala73/worldmonitor, AGPL-3.0) — **ข้อมูลภายนอก ไม่เกี่ยวกับ"
+               "คะแนน/โมเดลของระบบนี้**")
+    key = st.selectbox("เลือกมุมมอง", list(WM.VARIANTS.keys()),
+                       index=list(WM.VARIANTS.keys()).index(WM.DEFAULT_VARIANT),
+                       format_func=WM.variant_label)
+    url = WM.variant_url(key)
+    c1, c2 = st.columns(2)
+    c1.link_button("↗ เปิดแท็บใหม่ (ชัวร์สุด)", url, use_container_width=True)
+    c2.link_button("ซอร์สโค้ด (GitHub, AGPL-3.0)", WM.GITHUB_URL,
+                   use_container_width=True)
+    h = st.slider("ความสูงกรอบ (px)", 400, 1400, WM.IFRAME_HEIGHT, 20)
+    try:
+        components.iframe(url, height=h, scrolling=True)
+    except Exception as e:
+        st.error(f"ฝัง iframe ไม่ได้: {e} — ใช้ปุ่มเปิดแท็บใหม่ด้านบน")
+    with st.expander("ข้อจำกัดที่ต้องรู้ (อ่านก่อนใช้)", expanded=True):
+        for c_ in WM.CAVEATS:
+            st.markdown(f"- {c_}")
+
+
+# ===========================================================================
 # Routing
 # ===========================================================================
 ROUTES = {
@@ -1748,7 +2005,9 @@ ROUTES = {
     "ข่าวสาร": page_g_news,
     "ห้องประชุม AI": page_g_meeting,
     "ข้อมูลมหภาค": page_g_macro,
+    "รายประเทศ (Bond)": page_g_countries,
     "Trend สินทรัพย์โลก": page_g_trend,
+    "World Monitor": page_worldmonitor,
     "ทองคำ XAU (RTP v6.4)": page_gold,
     "คริปโต (BTC/ETH)": page_crypto,
     "Trade Log & สถิติ": page_tradelog,
