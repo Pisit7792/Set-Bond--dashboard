@@ -1,18 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-set_swing.py — พอร์ต SET SWING TREND-REGIME BREAKOUT v5.11 (Daily)
+set_swing.py — พอร์ต SET SWING TREND-REGIME BREAKOUT v5.13 (Daily)
 
 ซื่อตรงต่อต้นฉบับ:
-- ค่าตั้งต้นทุกตัว = Pine v5.11 (Long only, risk 0.5%, SMA200+ดัชนี gate,
-  BOS 20, score≥55, vol-shock 90, ceiling 30/5, gap 1.5 ATR, stop 2 ATR,
-  chandelier 22/3, TP1 OFF, tick-round ON, VT>80th, DD cut 10%→×0.5,
-  แพ้ติด≥2→×0.6, beta>1.3 trim, kill 6%/แพ้ติด 5, เพดาน 6 เทรด/เดือน,
-  โปรไฟล์ SET100 ON, board lot อัตโนมัติ 50/100)
-- ตัวเลือก v5.2-5.9 ที่ต้นฉบับปิดไว้ (flow/FX/event/skew/HTF/squeeze/ER/
-  breadth/RS/illiq/FRM/rnd-stop/outside-mode) = ปิดที่นี่เช่นกัน และ *ยังไม่ port*
-  ตัวคูณเหล่านั้น — เปิดไม่ได้จนกว่าจะ validate (บอกบนจอ)
+- ค่าตั้งต้นทุกตัว = Pine v5.13 (ซึ่งต้นฉบับยืนยันว่า default = v5.11 เป๊ะ):
+  Long only, risk 0.5%, SMA200+ดัชนี gate, BOS 20, score≥55, vol-shock 90,
+  ceiling 30/5, gap 1.5 ATR, stop 2 ATR, chandelier 22/3, TP1 OFF, tick-round ON,
+  VT>80th, DD cut 10%→×0.5, แพ้ติด≥2→×0.6, beta>1.3 trim, kill 6%/แพ้ติด 5,
+  เพดาน 6 เทรด/เดือน, โปรไฟล์ SET100 ON, board lot อัตโนมัติ 50/100
+- v5.13 ที่ port รอบนี้ (ทั้งหมด default OFF/แสดงผลเท่านั้น = พฤติกรรมเดิม):
+  * SQUEEZE precondition (TTM: BB20 ใน KC20) — ต้นฉบับ **ปิด default ตั้งแต่ v5.8**
+    เพราะ "edge decayed post-2001" (อ้าง Fang-Jacobsen-Qin, JPM 2017) — เปิดได้
+    แต่คำเตือนนั้นติดไปด้วย
+  * ACCUMULATION-FOOTPRINT WATCH — ต้นฉบับติดป้าย **DISPLAY ONLY, grade C
+    proxy**: "NEVER enters, exits, sizes or gates" — ที่นี่ก็เช่นกัน ใช้ดู/สแกน
+    เท่านั้น ไม่เข้าเงื่อนไขเทรด
+  * PB (Pullback-location entry, v5.12/13) — ทางเลือก trigger ที่สอง ต้นฉบับย้ำว่า
+    เป็น "EXECUTION TACTIC, not a documented edge" และเลเวล fib ไม่มีหลักฐาน
+    พยากรณ์ — OFF = breakout เดิมทุกประการ
+- ตัวเลือก v5.2-5.9 อื่นที่ต้นฉบับปิดไว้ (flow/FX/event/skew/HTF/ER-gate/
+  breadth/RS/illiq/FRM/rnd-stop/outside-mode) ยังปิดและ *ยังไม่ port* (บอกบนจอ)
 - จุดต่าง (บอกตรงๆ): งบ/XD ใช้วันที่กรอกเอง (fail-open), backtest หักต้นทุน
-  ไทยจริงทุกข้าง (คอม×1.07+ค่าธรรมเนียม+สเปรด) ซึ่ง *เข้มกว่า* TradingView
+  ไทยจริงทุกข้าง (คอม×1.07+ค่าธรรมเนียม+สเปรด) ซึ่ง *เข้มกว่า* TradingView,
+  และ PB "one entry per leg" เคลียร์แผนที่เมื่อสัญญาณผ่านเงื่อนไทั้งหมดของแท่งนั้น
+  (Pine เคลียร์เมื่อ order เข้าโดยเช็ค position ว่าง — ต่างกันเฉพาะกรณีถือไม้อยู่)
 """
 from __future__ import annotations
 
@@ -94,6 +105,21 @@ class SwingParams:
     auto_lot: bool = True
     use_reg_exit: bool = False
     surv_flag: bool = False
+    # --- v5.13: squeeze precondition (ต้นฉบับ OFF ตั้งแต่ v5.8 — edge decayed) ---
+    use_sqz: bool = False
+    sq_win: int = 6
+    # --- v5.13: accumulation-footprint watch (DISPLAY ONLY, grade C proxy) ---
+    use_acc: bool = True
+    acc_len: int = 20
+    acc_flat: float = 2.0
+    acc_ratio: float = 1.25
+    # --- v5.13: pullback-location entry (OFF = breakout v5.11 เป๊ะ) ---
+    entry_mode: str = "Breakout"      # "Breakout" | "Pullback"
+    pb_band: str = "Full"             # "Core" | "Deep" | "Full" | "Custom"
+    pb_z1: float = 0.382
+    pb_z2: float = 0.618
+    pb_win: int = 20
+    pb_kill: float = 1.00
 
 
 def effective(ticker: str, p: SwingParams) -> dict:
@@ -141,6 +167,49 @@ def compute_frame(df: pd.DataFrame, bench_close=None, ticker: str = "",
     fr["swing_hi"], fr["swing_lo"] = swing_hi, swing_lo
     fr["bos"] = (c > swing_hi) & (c.shift(1) <= swing_hi.shift(1))
     fr["bos_dn"] = (c < swing_lo) & (c.shift(1) >= swing_lo.shift(1))
+
+    # --- v5.13: SQUEEZE PRECONDITION (TTM: BB20 ใน KC20) — ต้นฉบับปิด default
+    #     ตั้งแต่ v5.8 ("edge decayed post-2001", Fang-Jacobsen-Qin JPM 2017)
+    bb_basis = c.rolling(20).mean()
+    bb_dev = 2.0 * c.rolling(20).std(ddof=0)      # Pine ta.stdev = population
+    kc_mid = c.ewm(span=20, adjust=False).mean()
+    kc_rng = 1.5 * G.atr_wilder(fr, 20)
+    fr["squeeze_on"] = ((bb_basis + bb_dev < kc_mid + kc_rng)
+                        & (bb_basis - bb_dev > kc_mid - kc_rng)).fillna(False)
+    _pos = np.arange(len(fr), dtype=float)
+    _last_sq = pd.Series(np.where(fr["squeeze_on"].to_numpy(), _pos, np.nan),
+                         index=fr.index).ffill()
+    fr["bars_sq"] = _pos - _last_sq               # NaN = ยังไม่เคยเกิด squeeze
+    fr["primed"] = (pd.Series(True, index=fr.index) if not p.use_sqz
+                    else (fr["bars_sq"] <= p.sq_win).fillna(False))
+
+    # --- v5.13: ACCUMULATION-FOOTPRINT WATCH — ต้นฉบับติดป้าย DISPLAY ONLY
+    #     grade C proxy ("NEVER enters, exits, sizes or gates") — ที่นี่เช่นกัน
+    up_vol = v.where(c > c.shift(1), 0.0).rolling(p.acc_len).sum()
+    dn_vol = v.where(c < c.shift(1), 0.0).rolling(p.acc_len).sum()
+    rng_hl = h - l
+    clv_raw = pd.Series(np.where(rng_hl > 0, ((c - l) - (h - c)) / rng_hl, 0.0),
+                        index=fr.index)
+    clv_avg = clv_raw.rolling(p.acc_len).mean()
+    vol_act = v.rolling(p.acc_len).mean() / v.rolling(100).mean().clip(lower=1.0)
+    rng_hi_a = h.rolling(p.acc_len).max()
+    rng_lo_a = l.rolling(p.acc_len).min()
+    fr["pos_in_rng"] = pd.Series(
+        np.where(rng_hi_a > rng_lo_a, (c - rng_lo_a) / (rng_hi_a - rng_lo_a), 0.5),
+        index=fr.index)
+    fr["acc_flat_ok"] = ((c - c.shift(p.acc_len)).abs()
+                         <= p.acc_flat * atrv).fillna(False)
+    fr["acc_press_ok"] = ((dn_vol > 0)
+                          & (up_vol >= p.acc_ratio * dn_vol)).fillna(False)
+    fr["acc_clv_ok"] = (clv_avg >= 0.10).fillna(False)
+    fr["acc_act_ok"] = (vol_act >= 0.7).fillna(False)
+    fr["acc_votes"] = (fr["acc_flat_ok"].astype(int)
+                       + fr["acc_press_ok"].astype(int)
+                       + fr["acc_clv_ok"].astype(int)
+                       + fr["acc_act_ok"].astype(int))
+    acc_ctx = ((c < swing_hi) & (fr["pos_in_rng"] <= 0.65)).fillna(False)
+    fr["acc_hot"] = bool(p.use_acc) & acc_ctx & (fr["acc_votes"] >= 3)
+    fr["acc_show"] = fr["acc_hot"] & fr["acc_hot"].shift(1).fillna(False)
 
     er_num = (c - c.shift(p.er_len)).abs()
     er_den = c.diff().abs().rolling(p.er_len).sum()
@@ -218,12 +287,133 @@ def compute_frame(df: pd.DataFrame, bench_close=None, ticker: str = "",
                & (not p.surv_flag))
     allow_l = p.trade_dir != "Short only"
     allow_s = p.trade_dir != "Long only"
-    fr["long_cond"] = (fr["regime_up"] & fr["bos"] & fr["score_up"]
+
+    # --- v5.13 entry trigger: Breakout (default, = v5.11 เป๊ะ) หรือ Pullback ---
+    use_pb = str(p.entry_mode).startswith("Pull")
+    if use_pb:
+        _pb_fill(fr, p, gates_l, gates_s, allow_l, allow_s)
+        trig_l, trig_s = fr["pb_conf_l"], fr["pb_conf_s"]
+    else:
+        fr["pb_side"] = 0
+        fr["pb_age"] = 0
+        fr["pb_tier"] = 0
+        fr["pb_conf_l"] = False
+        fr["pb_conf_s"] = False
+        fr["pb_zone_a"] = np.nan
+        fr["pb_zone_b"] = np.nan
+        trig_l = fr["primed"] & fr["bos"]
+        trig_s = fr["primed"] & fr["bos_dn"]
+    fr["long_cond"] = (fr["regime_up"] & trig_l & fr["score_up"]
                        & gates_l & allow_l).fillna(False)
-    fr["short_cond"] = (fr["regime_dn"] & fr["bos_dn"] & fr["score_dn"]
+    fr["short_cond"] = (fr["regime_dn"] & trig_s & fr["score_dn"]
                         & gates_s & allow_s).fillna(False)
     fr.attrs["eff"] = eff
+    fr.attrs["use_pb"] = use_pb
     return fr
+
+
+def pb_bounds(p: SwingParams) -> tuple[float, float]:
+    """ขอบโซน (ตื้น, ลึก) ตาม preset v5.13 — Full = 0.382-0.618 (default)"""
+    b = str(p.pb_band)
+    if b.startswith("Core"):
+        return 0.382, 0.500
+    if b.startswith("Deep"):
+        return 0.500, 0.618
+    if b.startswith("Custom"):
+        return min(p.pb_z1, p.pb_z2), max(p.pb_z1, p.pb_z2)
+    return 0.382, 0.618
+
+
+def _pb_fill(fr: pd.DataFrame, p: SwingParams, gates_l, gates_s,
+             allow_l: bool, allow_s: bool) -> None:
+    """PB state machine (พอร์ตลำดับเดียวกับ Pine v5.12/13 ต่อแท่ง):
+    arm บน BOS+primed → ratchet ปลายเลก → kill (retrace เกิน pb_kill /
+    หมดหน้าต่าง) → touch โซน (tier core/deep) → ยืนยันด้วยแท่งทิศเดียวกัน
+    (โดนบล็อกก็ 'ใช้สิทธิ์' — ต้องแตะโซนใหม่) → หนึ่งเอนทรีต่อเลก"""
+    zs, zd = pb_bounds(p)
+    n = len(fr)
+    c = fr["Close"].to_numpy(float)
+    o = fr["Open"].to_numpy(float)
+    h = fr["High"].to_numpy(float)
+    l = fr["Low"].to_numpy(float)
+    bos = fr["bos"].to_numpy(bool)
+    bos_dn = fr["bos_dn"].to_numpy(bool)
+    primed = fr["primed"].to_numpy(bool)
+    sw_hi = fr["swing_hi"].to_numpy(float)
+    sw_lo = fr["swing_lo"].to_numpy(float)
+    ok_l = (fr["regime_up"] & fr["score_up"] & gates_l & allow_l) \
+        .fillna(False).to_numpy(bool)
+    ok_s = (fr["regime_dn"] & fr["score_dn"] & gates_s & allow_s) \
+        .fillna(False).to_numpy(bool)
+
+    side = 0
+    leg_lo = leg_hi = ext_hi = ext_lo = float("nan")
+    age = 0
+    touch_l = touch_s = False
+    tier = 0
+    a_side = np.zeros(n, dtype=int)
+    a_age = np.zeros(n, dtype=int)
+    a_tier = np.zeros(n, dtype=int)
+    a_conf_l = np.zeros(n, dtype=bool)
+    a_conf_s = np.zeros(n, dtype=bool)
+    a_zone_a = np.full(n, np.nan)
+    a_zone_b = np.full(n, np.nan)
+
+    for i in range(n):
+        if bos[i] and primed[i]:
+            side, leg_lo, ext_hi = 1, sw_lo[i], h[i]
+            age, touch_l, touch_s, tier = 0, False, False, 0
+        if bos_dn[i] and primed[i]:
+            side, leg_hi, ext_lo = -1, sw_hi[i], l[i]
+            age, touch_l, touch_s, tier = 0, False, False, 0
+        if side != 0 and not bos[i] and not bos_dn[i]:
+            age += 1
+        if side == 1:
+            ext_hi = h[i] if ext_hi != ext_hi else max(ext_hi, h[i])
+        if side == -1:
+            ext_lo = l[i] if ext_lo != ext_lo else min(ext_lo, l[i])
+        if side == 1:
+            kill_l = ext_hi - (ext_hi - leg_lo) * p.pb_kill
+            if c[i] < kill_l or age > p.pb_win:
+                side, touch_l, tier = 0, False, 0
+        if side == -1:
+            kill_s = ext_lo + (leg_hi - ext_lo) * p.pb_kill
+            if c[i] > kill_s or age > p.pb_win:
+                side, touch_s, tier = 0, False, 0
+        z_top_l = ext_hi - (ext_hi - leg_lo) * zs if side == 1 else float("nan")
+        z_bot_l = ext_hi - (ext_hi - leg_lo) * zd if side == 1 else float("nan")
+        z_bot_s = ext_lo + (leg_hi - ext_lo) * zs if side == -1 else float("nan")
+        z_top_s = ext_lo + (leg_hi - ext_lo) * zd if side == -1 else float("nan")
+        mid = (ext_hi - (ext_hi - leg_lo) * 0.5 if side == 1 else
+               ext_lo + (leg_hi - ext_lo) * 0.5 if side == -1 else float("nan"))
+        live_l = side == 1 and z_top_l == z_top_l
+        live_s = side == -1 and z_bot_s == z_bot_s
+        if live_l and l[i] <= z_top_l:
+            touch_l = True
+            tier = max(tier, 2 if l[i] <= mid else 1)
+        if live_s and h[i] >= z_bot_s:
+            touch_s = True
+            tier = max(tier, 2 if h[i] >= mid else 1)
+        conf_l = live_l and touch_l and c[i] > o[i]
+        conf_s = live_s and touch_s and c[i] < o[i]
+        if conf_l:
+            touch_l = False           # ยืนยันหนึ่งครั้ง = ใช้สิทธิ์ (บล็อกก็เสีย)
+        if conf_s:
+            touch_s = False
+        a_side[i], a_age[i], a_tier[i] = side, age, tier
+        a_conf_l[i], a_conf_s[i] = conf_l, conf_s
+        a_zone_a[i] = z_top_l if side == 1 else (z_bot_s if side == -1 else np.nan)
+        a_zone_b[i] = z_bot_l if side == 1 else (z_top_s if side == -1 else np.nan)
+        if (conf_l and ok_l[i]) or (conf_s and ok_s[i]):
+            side, touch_l, touch_s, tier = 0, False, False, 0  # หนึ่งเอนทรี/เลก
+
+    fr["pb_side"] = a_side
+    fr["pb_age"] = a_age
+    fr["pb_tier"] = a_tier
+    fr["pb_conf_l"] = a_conf_l
+    fr["pb_conf_s"] = a_conf_s
+    fr["pb_zone_a"] = a_zone_a
+    fr["pb_zone_b"] = a_zone_b
 
 
 def size_mult_at(fr: pd.DataFrame, i: int, p: SwingParams, dd_pct: float,
@@ -274,6 +464,20 @@ def state_today(fr: pd.DataFrame, p: SwingParams, equity: float = 1_000_000.0) -
          f"พื้น {eff['liq_min']:.0f} ลบ. (โปรไฟล์)"),
         ("Surveillance (ธงมือ)", not p.surv_flag, ""),
     ]
+    if p.use_sqz:
+        bsq = r["bars_sq"]
+        ck.append((f"Squeeze ≤ {p.sq_win} แท่ง (primed)", bool(r["primed"]),
+                   "ยังไม่เคยเกิด squeeze" if bsq != bsq
+                   else f"squeeze ล่าสุด {int(bsq)} แท่งก่อน"))
+    if fr.attrs.get("use_pb"):
+        side = int(r["pb_side"])
+        pb_txt = ("รอ BOS ใหม่ (แผนที่ว่าง)" if side == 0 else
+                  (("แผนที่ LONG" if side == 1 else "แผนที่ SHORT")
+                   + (" · แตะโซน" + ("ลึก" if int(r["pb_tier"]) == 2 else "ตื้น")
+                      if int(r["pb_tier"]) > 0 else " · รอย่อเข้าโซน")
+                   + f" · อายุ {int(r['pb_age'])}/{p.pb_win} แท่ง"))
+        ck.append(("PB entry (v5.13)",
+                   side != 0 or bool(r["pb_conf_l"] or r["pb_conf_s"]), pb_txt))
     trig = bool(r["long_cond"] or r["short_cond"])
     return {"regime": reg, "triggered": trig, "checklist": ck,
             "sl_dist": round(sl, 2), "lot": lot, "size_mult": round(sm, 2),
@@ -490,6 +694,84 @@ def rank_universe(prices: dict, bench_close, p: SwingParams = None,
         return out
     order = {b: i for i, b in enumerate(BUCKET_ORDER)}
     out["_o"] = out["บักเก็ต"].map(order)
+    out = out.sort_values(["_o", "ConfL"], ascending=[True, False]) \
+             .drop(columns="_o").reset_index(drop=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# v5.13: สแกน Accumulation + Squeeze ทั้ง universe (รายการเฝ้าดู — ไม่ใช่สัญญาณซื้อ)
+# ---------------------------------------------------------------------------
+ACC_SQ_BUCKETS = ["🟣 สะสม + สควีซพร้อมกัน", "🔵 สควีซอยู่ (บีบตัว)",
+                  "🟡 สะสม (footprint)", "🟠 เพิ่งคลายสควีซ (≤6 แท่ง)"]
+
+
+def scan_acc_squeeze(prices: dict, bench_close,
+                     p: SwingParams = None) -> pd.DataFrame:
+    """สถานะสะสม/สควีซ ณ แท่งล่าสุดของทุกตัวใน universe.
+
+    ความซื่อสัตย์ (คำของต้นฉบับเอง): accumulation watch = DISPLAY ONLY,
+    grade C proxy, "NEVER enters, exits, sizes or gates" และ squeeze edge
+    "decayed post-2001" (เหตุที่ต้นฉบับปิด useSqz ตั้งแต่ v5.8) —
+    ตารางนี้คือคิวเฝ้าดู ไม่ใช่สัญญาณซื้อ และไม่เข้าเงื่อนไขเทรดใด ๆ"""
+    p = p or SwingParams()
+    rows = []
+    for tk, df in prices.items():
+        try:
+            if len(df) < 260:
+                continue
+            fr = compute_frame(df, bench_close, tk, p)
+            r = fr.iloc[-1]
+            sq_on = bool(r["squeeze_on"])
+            b_sq = r["bars_sq"]
+            recent_sq = (b_sq == b_sq) and (0 < b_sq <= 6)
+            acc = bool(r["acc_show"])
+            if not (sq_on or acc or recent_sq):
+                continue
+            if acc and sq_on:
+                bucket = ACC_SQ_BUCKETS[0]
+            elif sq_on:
+                bucket = ACC_SQ_BUCKETS[1]
+            elif acc:
+                bucket = ACC_SQ_BUCKETS[2]
+            else:
+                bucket = ACC_SQ_BUCKETS[3]
+            votes = []
+            if r["acc_flat_ok"]:
+                votes.append("ราคานิ่ง")
+            if r["acc_press_ok"]:
+                votes.append("วอลุ่มขาซื้อเด่น")
+            if r["acc_clv_ok"]:
+                votes.append("ปิดค่อนบน")
+            if r["acc_act_ok"]:
+                votes.append("ตลาดไม่ตาย")
+            reg = "UP" if r["regime_up"] else ("DOWN" if r["regime_dn"] else "FLAT")
+            atr_ok = r["atr"] == r["atr"] and r["atr"] > 0
+            dist = (r["swing_hi"] - r["Close"]) / r["atr"] if atr_ok \
+                else float("nan")
+            rows.append({
+                "หุ้น": tk.replace(".BK", ""), "สถานะ": bucket,
+                "โหวตสะสม": f"{int(r['acc_votes'])}/4",
+                "องค์ประกอบที่ผ่าน": " + ".join(votes) if votes else "—",
+                "สควีซ": ("ON" if sq_on else
+                          (f"คลาย {int(b_sq)} แท่ง" if b_sq == b_sq else "—")),
+                "ตำแหน่งในกรอบ": (f"{float(r['pos_in_rng']) * 100:.0f}%"
+                                   if r["pos_in_rng"] == r["pos_in_rng"] else "—"),
+                "ConfL": int(r["conf_l"]) if r["conf_l"] == r["conf_l"] else 0,
+                "Regime": reg,
+                "ห่าง trigger (ATR)": round(float(dist), 2) if dist == dist
+                else None,
+                "ราคา": round(float(r["Close"]), 2),
+                "ADV20 (ลบ.)": round(float(r["liq_val"]) / 1e6, 1)
+                if r["liq_val"] == r["liq_val"] else None,
+            })
+        except Exception:
+            continue
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    order = {b: i for i, b in enumerate(ACC_SQ_BUCKETS)}
+    out["_o"] = out["สถานะ"].map(order)
     out = out.sort_values(["_o", "ConfL"], ascending=[True, False]) \
              .drop(columns="_o").reset_index(drop=True)
     return out

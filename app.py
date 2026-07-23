@@ -43,6 +43,7 @@ import set_context as CX
 import set_engine as SE
 import set_swing as SW
 import signals as SG
+import stock_meeting as SM
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -52,8 +53,9 @@ DISCLAIMER = ("เครื่องมือเพื่อการศึก�
 
 ZONES = {
     "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "Fund Flow นักลงทุน",
-                          "SET Swing v5.11 + Context",
-                          "Scan หุ้น Overall",
+                          "SET Swing v5.13 + Context",
+                          "Scan หุ้น Overall", "สแกน Accum+Squeeze",
+                          "AI Meeting หุ้น",
                           "สแกน SET100", "กราฟรายตัว",
                           "RRG", "Backtest + ตรวจสอบ", "Scenario ไทย",
                           "ฤดูกาล (TOM)", "ต้นทุนไทย"],
@@ -440,7 +442,7 @@ def page_set_chart():
     r = fr.iloc[-1]
     reg = "UP 🟢" if r["regime_up"] else ("DOWN 🔴" if r["regime_dn"] else "FLAT ⚪")
     dist_t = ((r["swing_hi"] - r["Close"]) / r["atr"]) if r["atr"] > 0 else float("nan")
-    st.caption(f"มุมมองแบบสคริปต์ SET Swing v5.11 — Regime {reg} · ConfL "
+    st.caption(f"มุมมองแบบสคริปต์ SET Swing v5.13 — Regime {reg} · ConfL "
                f"{int(r['conf_l'])}/100 (thr 55) · trigger {r['swing_hi']:.2f} "
                f"(ห่าง {dist_t:.1f} ATR) · stop อ้างอิง {r['sl_dist']:.2f} บาท (2 ATR)")
     show = fr.tail(300)
@@ -485,7 +487,7 @@ def page_set_chart():
                       legend=dict(orientation="h"))
     fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     plot(fig)
-    explain_box("อ่านจอนี้แบบ v5.11",
+    explain_box("อ่านจอนี้แบบ v5.13",
                 "เส้นส้ม = SMA200 (regime) | เส้นม่วง/แดง hv = แนวเบรก/หลุด 20 แท่ง "
                 "(BOS) | เส้นเทา dash = Chandelier 22/3 อ้างอิง (ตอนถือจริง ratchet "
                 "ขึ้นอย่างเดียวจากจุดเข้า) | ▲/▼ = แท่งที่เงื่อนไขครบ → ลงมือ *open "
@@ -1578,12 +1580,15 @@ def page_gold():
 
 
 def page_swing():
-    st.subheader("SET Swing v5.11 + Market/Stock Context — คณิตเดียวกับ Pine")
+    st.subheader("SET Swing v5.13 + Market/Stock Context — คณิตเดียวกับ Pine")
     st.caption("พอร์ตจากสคริปต์ของคุณแบบ same math, same defaults (Long only, "
                "risk 0.5%, BOS 20, score≥55, stop 2 ATR → Chandelier 22/3, "
                "TP1 OFF, kill 6%/แพ้ติด 5, เพดาน 6 เทรด/เดือน, โปรไฟล์ SET100 "
-               "ทางการ H2-2026) | ตัวเลือกที่ต้นฉบับปิด (flow/FX/event/skew/HTF/"
-               "squeeze ฯลฯ) ปิดที่นี่เช่นกันและยังไม่ port")
+               "ทางการ H2-2026) | v5.13 port แล้ว: squeeze precondition (default "
+               "OFF — ต้นฉบับปิดเองตั้งแต่ v5.8 เหตุ edge decayed post-2001), "
+               "accumulation watch (display only เกรด C), PB entry (default OFF "
+               "= breakout เดิมเป๊ะ) | ที่ยังไม่ port: flow/FX/event/skew/HTF/"
+               "ER-gate/breadth ฯลฯ (ต้นฉบับก็ปิด)")
     mc = CX.market_context(bench_close,
                            vix_close=CTX_VIX, usdthb_close=thb_close,
                            spx_close=CTX_SPX, eem_close=CTX_EEM)
@@ -1602,7 +1607,7 @@ def page_swing():
         for cline in mc["calendar"]:
             st.caption("🗓️ " + cline)
         st.caption("⚠️ " + mc["note"])
-    st.markdown("#### 📋 จัดลำดับทั้ง SET100 ตามกติกา v5.11 (Long only)")
+    st.markdown("#### 📋 จัดลำดับทั้ง SET100 ตามกติกา v5.13 (Long only)")
     rank = C_swing_rank(set_period, tuple(sorted(set_prices)),
                         str(bench_close.index[-1].date()))
     if rank.empty:
@@ -1641,9 +1646,32 @@ def page_swing():
         [{"": lvmap[lv], "รายการ": a, "ค่า": b} for a, b, lv in sc["rows"]]),
         hide_index=True, height=420)
     st.divider()
-    st.markdown("#### สถานะกลยุทธ์ Swing v5.11 (วันนี้)")
+    st.markdown("#### สถานะกลยุทธ์ Swing v5.13 (วันนี้)")
     eqty = st.number_input("ทุนจำลอง (บาท)", 10000.0, 1e9, 1_000_000.0, 50000.0)
-    swp = SW.SwingParams(surv_flag=surv)
+    with st.expander("⚙️ ตัวเลือก v5.13 (ค่าตั้งต้น = พฤติกรรม v5.11 เป๊ะ)"):
+        e1, e2, e3 = st.columns(3)
+        emode = e1.selectbox("Entry trigger",
+                             ["Breakout (default)", "Pullback to zone (PB)"], 0)
+        pband = e2.selectbox("PB zone preset",
+                             ["Full 0.382-0.618 (default)", "Core 0.382-0.500",
+                              "Deep 0.500-0.618"], 0)
+        pkill = e3.slider("PB kill (สัดส่วน retrace)", 0.50, 1.00, 1.00, 0.01)
+        e4, e5 = st.columns(2)
+        pwin = e4.number_input("PB window (แท่ง)", 3, 100, 20, 1)
+        usesq = e5.checkbox("เปิด squeeze precondition "
+                            "(ต้นฉบับปิดตั้งแต่ v5.8 — edge decayed post-2001)",
+                            False)
+        if emode.startswith("Pull"):
+            st.caption("⚠️ คำต้นฉบับตรง ๆ: PB คือ *execution tactic* ไม่ใช่ edge "
+                       "ที่มีหลักฐาน — เลเวล fib ไม่พยากรณ์อะไร และเลกที่แรงสุด"
+                       "มักไม่ย่อ (จะพลาด breakout ที่ดีที่สุดบางตัว) — "
+                       "เทียบสองโหมดผ่าน backtest ก่อนเชื่อ")
+    swp = SW.SwingParams(
+        surv_flag=surv,
+        entry_mode="Pullback" if emode.startswith("Pull") else "Breakout",
+        pb_band=("Core" if pband.startswith("Core") else
+                 "Deep" if pband.startswith("Deep") else "Full"),
+        pb_win=int(pwin), pb_kill=float(pkill), use_sqz=usesq)
     fr = SW.compute_frame(set_prices[pick], bench_close, tkr, swp, blk_dates)
     stt = SW.state_today(fr, swp, eqty)
     if stt["triggered"]:
@@ -1659,7 +1687,7 @@ def page_swing():
                f"ของ ADV, VT target {e['vt_tgt']:.1f}% | stop {stt['sl_dist']} บาท "
                f"(2 ATR) | lot {stt['lot']} | size mult {stt['size_mult']}x → "
                f"~{stt['board_qty']:,} หุ้น ที่ risk 0.5%")
-    with st.expander("🧪 Backtest v5.11 (ย้อนหลังช่วงข้อมูลที่โหลด)"):
+    with st.expander("🧪 Backtest v5.13 (ย้อนหลังช่วงข้อมูลที่โหลด)"):
         bt = SW.backtest(fr, swp, eqty)
         lvl, vmsg = SE.sample_verdict(bt["n"])
         {"fail": st.error, "warn": st.warning, "ok": st.success}[lvl]("🧮 " + vmsg)
@@ -1791,7 +1819,7 @@ def _overall_default():
 
 
 def page_overall():
-    st.subheader("Scan หุ้น Overall — Swing v5.11 × ปัจจัย 4 ตัว")
+    st.subheader("Scan หุ้น Overall — Swing v5.13 × ปัจจัย 4 ตัว")
     st.caption("กติกาเปิดเผย: 'น่าลงทุนวันนี้' = ผ่านประตูสภาพคล่อง + Swing บักเก็ต "
                "🟢/🟡 + คะแนนปัจจัยรวม (composite z) ≥ 0 — ทั้งหมดคือคิวทำการบ้าน "
                "ไม่ใช่คำสั่งซื้อ และเกณฑ์รวมนี้ยังไม่ผ่าน validation เชิงประจักษ์")
@@ -1829,6 +1857,232 @@ def page_overall():
                "ไม่ใช่หลักฐานผลตอบแทน | เวิร์กโฟลว์: หน้านี้คัดตัว → Stock Context "
                "เช็กโครงสร้าง → รอกติกา Swing จริง | หุ้นชุดนี้ถูกใช้เป็นค่าตั้งต้น"
                "ของหน้า RRG ด้วย")
+
+
+# ===========================================================================
+# 🇹🇭 สแกน Accum+Squeeze (v5.13) — รายการเฝ้าดู ไม่ใช่สัญญาณซื้อ
+# ===========================================================================
+
+@st.cache_data(ttl=3600, show_spinner="สแกน Accumulation + Squeeze ทั้ง SET100...")
+def C_accsq(period: str, tickers_key: tuple, bench_key: str):
+    return SW.scan_acc_squeeze(set_prices, bench_close)
+
+
+def page_set_accsq():
+    st.caption("รายการเฝ้าดูจากสคริปต์ v5.13 — **ไม่ใช่สัญญาณซื้อ**: ต้นฉบับ"
+               "ติดป้ายเองว่า accumulation watch เป็น *display only เกรด C* "
+               "(\"NEVER enters, exits, sizes or gates\") และ squeeze edge "
+               "*decayed post-2001* (เหตุที่ต้นฉบับปิด useSqz ตั้งแต่ v5.8) — "
+               "ใช้จัดคิวทำการบ้าน แล้วรอเงื่อนไขเต็มของกติกา")
+    tbl = C_accsq(set_period, tuple(sorted(set_prices)),
+                  str(bench_close.index[-1].date()))
+    if tbl.empty:
+        st.info("วันนี้ไม่มีตัวที่เข้าเงื่อนไขสะสม/สควีซ (หรือข้อมูลไม่พอ)")
+        return
+    cnt = tbl["สถานะ"].value_counts()
+    mR = st.columns(4)
+    for _i, _b in enumerate(SW.ACC_SQ_BUCKETS):
+        mR[_i].metric(_b.split(" ", 1)[0], int(cnt.get(_b, 0)),
+                      _b.split(" ", 1)[1], delta_color="off")
+    fsel = st.selectbox("กรองสถานะ", ["ทั้งหมด"] + SW.ACC_SQ_BUCKETS, 0)
+    shw = tbl if fsel == "ทั้งหมด" else tbl[tbl["สถานะ"] == fsel]
+    st.dataframe(shw, hide_index=True, height=380)
+    picks = st.multiselect("เลือกส่งเข้าห้องประชุม AI",
+                           list(tbl["หุ้น"]), default=list(tbl["หุ้น"][:4]))
+    if st.button("🏛️ ส่งชื่อไปหน้า 'AI Meeting หุ้น'"):
+        st.session_state["meet_pick"] = picks
+        st.success(f"ส่ง {len(picks)} ตัวแล้ว — เปิดหน้า 'AI Meeting หุ้น' "
+                   "จากเมนูซ้าย")
+    explain_box("โหวตสะสม 4 ข้อคืออะไร (นิยามตรงจากสคริปต์)",
+                "1) **ราคานิ่ง**: ขยับสุทธิ 20 แท่ง ≤ 2 ATR · "
+                "2) **วอลุ่มขาซื้อเด่น**: วอลุ่มวันบวก ≥ 1.25× วันลบ · "
+                "3) **ปิดค่อนบน**: ค่าเฉลี่ย CLV ≥ +0.10 · "
+                "4) **ตลาดไม่ตาย**: วอลุ่มเฉลี่ย 20 ≥ 0.7× ฐาน 100 แท่ง\n\n"
+                "ต้อง ≥3/4 **สองแท่งติด** และอยู่ใต้ trigger + ครึ่งล่างของกรอบ "
+                "(ตำแหน่ง ≤ 65%) จึงขึ้น 'สะสม'\n\n"
+                "เหตุผลเชิงทฤษฎี: square-root impact law บอกว่า metaorder ทิ้ง"
+                "รอยเท้าวอลุ่มหลายวัน — แต่คำเตือนของต้นฉบับ: เครื่องมือสาย "
+                "OBV/AD หลักฐาน weak/mixed, Wyckoff เป็น anecdotal และออร์เดอร์ "
+                "VWAP/POV ที่ทำดี ๆ **ตรวจไม่เจอ** — จึงเป็นแค่รายการเฝ้าดู")
+
+
+# ===========================================================================
+# 🇹🇭 AI Meeting หุ้น — วิเคราะห์หุ้นที่มีสัญญาณ (โมเดลเดียวเล่นหลายบท)
+# ===========================================================================
+
+def _stk_context(tickers: list[str]) -> dict:
+    """ประกอบ context ต่อหุ้นจาก engine จริง (โปร่งใส — โชว์ทั้งก้อนบนจอ)"""
+    fdf, _ = load_flows()
+    flow = {}
+    if len(fdf):
+        try:
+            fs = FL.flow_summary(fdf)
+            flow = {str(r["กลุ่ม"]): {"สะสม20วัน_ลบ": r.get("สะสม 20 วัน"),
+                                       "streak_วัน": r.get("ซื้อ/ขายติดกัน (วัน)"),
+                                       "z_วันล่าสุด": r.get("z วันล่าสุด")}
+                    for _, r in fs.iterrows()} if len(fs) else {}
+        except Exception:
+            flow = {}
+    ctx = {"ณ_วันที่": str(datetime.now().date()),
+           "กติกา": "SET Swing v5.13 (Long only, ค่าตั้งต้น)",
+           "ข้อมูล": "ราคาสิ้นวัน yfinance — ไม่มีฟีดข่าวรายหุ้น",
+           "global_overlay": {"label": overlay["label"],
+                              "reasons": overlay["reasons"][:4]},
+           "fund_flow": flow, "หุ้น": {}}
+    for tk in tickers:
+        key = tk if tk.endswith(".BK") else tk + ".BK"
+        df = set_prices.get(key)
+        if df is None or len(df) < 260:
+            ctx["หุ้น"][tk] = {"error": "ข้อมูลไม่พอ"}
+            continue
+        p_ = SW.SwingParams()
+        fr = SW.compute_frame(df, bench_close, tk, p_)
+        r = fr.iloc[-1]
+        stt = SW.state_today(fr, p_)
+        fails = [nm for nm, okk, _d in stt["checklist"] if not okk]
+        atr_ok = r["atr"] == r["atr"] and r["atr"] > 0
+        dist = float((r["swing_hi"] - r["Close"]) / r["atr"]) if atr_ok else None
+        try:
+            bt = SW.backtest(fr, p_)
+            btd = ({"เทรด": bt["n"], "win_rate": round(bt["win_rate"], 2),
+                    "CI95": [round(x, 2) for x in bt["ci"]],
+                    "PF": (None if not np.isfinite(bt["pf"])
+                           else round(bt["pf"], 2)),
+                    "expectancy_R": round(bt["expectancy_r"], 2)}
+                   if bt["n"] else {"เทรด": 0})
+        except Exception:
+            btd = {"error": "คำนวณไม่ได้"}
+        ctx["หุ้น"][tk] = {
+            "ราคา": round(float(r["Close"]), 2),
+            "regime": stt["regime"],
+            "ConfL": int(r["conf_l"]) if r["conf_l"] == r["conf_l"] else None,
+            "ห่าง_trigger_ATR": None if dist is None else round(dist, 2),
+            "เงื่อนไขที่ยังไม่ผ่าน": fails,
+            "squeeze_on": bool(r["squeeze_on"]),
+            "squeeze_คลายมาแล้ว_แท่ง": (int(r["bars_sq"])
+                                          if r["bars_sq"] == r["bars_sq"] else None),
+            "สะสม": {"โหวต": f"{int(r['acc_votes'])}/4",
+                      "ติดป้ายสะสม": bool(r["acc_show"]),
+                      "ตำแหน่งในกรอบ_pct": (round(float(r["pos_in_rng"]) * 100)
+                                              if r["pos_in_rng"] == r["pos_in_rng"]
+                                              else None),
+                      "หมายเหตุ": "proxy เกรด C — display only"},
+            "vol_rank": (round(float(r["vol_rank"]))
+                         if r["vol_rank"] == r["vol_rank"] else None),
+            "ADV20_ลบ": (round(float(r["liq_val"]) / 1e6, 1)
+                          if r["liq_val"] == r["liq_val"] else None),
+            "โปรไฟล์": stt["eff"]["sector"],
+            "backtest_หุ้นนี้": btd,
+        }
+    return ctx
+
+
+def page_stock_meeting():
+    st.caption("**ก่อนใช้:** 'ทีม AI' = โมเดลเดียวเล่นหลายบท — ความเห็นไม่อิสระ"
+               "ทางสถิติ เสียงเอกฉันท์ไม่เพิ่มความน่าจะเป็นถูก | กติกาเหล็ก: "
+               "ห้ามคิดเลข/ตั้งราคาเป้า/เดาข่าว — มติมีแค่ ตาม (เข้าเมื่อกติกา "
+               "v5.13 ครบ) / งด / ค้าน และคำสั่งมีแค่ ทำตามกติกา/ข้าม/ลดขนาด")
+    names = sorted(k.replace(".BK", "") for k in set_prices)
+    dflt = [t for t in st.session_state.get("meet_pick", []) if t in names][:6]
+    if not dflt:
+        try:
+            rk = C_swing_rank(set_period, tuple(sorted(set_prices)),
+                              str(bench_close.index[-1].date()))
+            dflt = list(rk[rk["บักเก็ต"].isin(SW.BUCKET_ORDER[:2])]["หุ้น"])[:4]
+        except Exception:
+            dflt = []
+    picks = st.multiselect("หุ้นที่จะเข้าวาระ (แนะนำ ≤ 6 — token/เวลาเพิ่มตามจำนวน)",
+                           names, default=dflt)
+    api_key = st.text_input("Anthropic API key", type="password",
+                            key="stk_meet_key")
+    panel = st.multiselect("บทบาทในทีม", [q["id"] for q in SM.PERSONAS],
+                           default=SM.DEFAULT_PANEL,
+                           format_func=lambda i: next(q["th"] for q in SM.PERSONAS
+                                                      if q["id"] == i))
+    if not picks:
+        st.info("ยังไม่เลือกหุ้น — เลือกเอง หรือกดส่งชื่อจากหน้า "
+                "'สแกน Accum+Squeeze' / ใช้บักเก็ต 🟢🟡 อัตโนมัติ")
+        return
+    ctx = _stk_context(picks)
+    with st.expander("ข้อมูลที่ส่งให้ AI (โปร่งใส — ทั้งหมดจาก engine)"):
+        st.code(json.dumps(ctx, ensure_ascii=False, indent=2))
+    if st.button("🏛️ เปิดประชุม (3 API calls)"):
+        if not api_key:
+            st.error("ต้องใส่ Anthropic API key")
+        else:
+            try:
+                import anthropic
+            except ImportError:
+                st.error("ต้องติดตั้งก่อน: pip install anthropic")
+                return
+            client = anthropic.Anthropic(api_key=api_key)
+            cj = json.dumps(ctx, ensure_ascii=False)
+            msgs = []
+            try:
+                with st.spinner("รอบ 1: ลูกทีมแถลง + ลงมติรายหุ้น..."):
+                    msgs.append({"role": "user",
+                                 "content": SM.build_round1_prompt(panel, cj)})
+                    r1 = client.messages.create(model="claude-sonnet-4-6",
+                                                max_tokens=2000, messages=msgs)
+                    t1 = "".join(b.text for b in r1.content if b.type == "text")
+                    msgs.append({"role": "assistant", "content": t1})
+                with st.spinner("รอบ 2: โต้แย้งข้อขัดแย้ง..."):
+                    msgs.append({"role": "user",
+                                 "content": SM.build_round2_prompt()})
+                    r2 = client.messages.create(model="claude-sonnet-4-6",
+                                                max_tokens=1200, messages=msgs)
+                    t2 = "".join(b.text for b in r2.content if b.type == "text")
+                    msgs.append({"role": "assistant", "content": t2})
+                with st.spinner("หัวหน้าทีมสรุป + กระดานมติ..."):
+                    msgs.append({"role": "user",
+                                 "content": SM.build_chair_prompt()})
+                    r3 = client.messages.create(model="claude-sonnet-4-6",
+                                                max_tokens=1600, messages=msgs)
+                    t3 = "".join(b.text for b in r3.content if b.type == "text")
+                ana, parsed = SM.parse_chair(t3)
+                rec = {"เวลา": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "หุ้น": picks, "รอบ1": t1, "รอบ2": t2,
+                       "หัวหน้าทีม": ana or t3, "parsed": parsed}
+                st.session_state.setdefault("stock_meetings", []).insert(0, rec)
+            except Exception as e_:
+                st.error(f"เรียก API ไม่สำเร็จ: {e_}")
+    hist = st.session_state.get("stock_meetings", [])
+    if not hist:
+        return
+    st.markdown(f"#### ประวัติการประชุม ({len(hist)}) — อยู่ใน session นี้เท่านั้น")
+    for gi, rec in enumerate(hist):
+        with st.expander(f"{rec['เวลา']} · {', '.join(rec['หุ้น'])}",
+                         expanded=(gi == 0)):
+            pr = rec.get("parsed")
+            if pr and pr.get("votes"):
+                st.markdown("**กระดานมติ**")
+                vcols = st.columns(min(4, max(1, len(pr["votes"]))))
+                for vi, (tk, v) in enumerate(pr["votes"].items()):
+                    with vcols[vi % len(vcols)]:
+                        st.markdown(f":{SM.vote_style(v['มติ'])}[**{tk} · "
+                                    f"{v['มติ']} {v['conf']}**]")
+                        st.caption(v["เหตุผล"] or "—")
+            st.markdown(f"**บทวิเคราะห์หัวหน้าทีม**"
+                        + (f" (conf {pr['conf_รวม']})" if pr else ""))
+            st.markdown(rec["หัวหน้าทีม"])
+            if pr:
+                if pr.get("ขัดแย้ง"):
+                    st.markdown("**ข้อขัดแย้ง:** " + " · ".join(pr["ขัดแย้ง"]))
+                if pr.get("คำสั่ง"):
+                    st.markdown("**คำสั่ง (จำกัด 3 แบบ)**")
+                    for o in pr["คำสั่ง"]:
+                        st.markdown(f"- :{'green' if o['คำสั่ง'] == 'ทำตามกติกา' else 'orange' if o['คำสั่ง'] == 'ลดขนาด' else 'gray'}"
+                                    f"[{o['หุ้น']} → **{o['คำสั่ง']}**] {o['เงื่อนไข']}")
+            else:
+                st.caption("⚠️ หัวหน้าทีมไม่ส่ง JSON ตามรูปแบบ — แสดงข้อความดิบแทน "
+                           "(กดเปิดประชุมใหม่ได้)")
+            with st.expander("ข้อมูลที่เสนอในที่ประชุม (รอบ 1-2 เต็ม)"):
+                st.markdown("**รอบ 1 — ลูกทีมแถลง**\n\n" + rec["รอบ1"])
+                st.markdown("---\n**รอบ 2 — โต้แย้ง**\n\n" + rec["รอบ2"])
+    st.download_button("⬇️ ดาวน์โหลดประวัติ (JSON)",
+                       json.dumps(hist, ensure_ascii=False, indent=1),
+                       file_name="stock_meetings.json", mime="application/json")
+    st.caption("⚠️ " + SM.DISCLAIMER)
 
 
 # ===========================================================================
@@ -1988,7 +2242,9 @@ def page_worldmonitor():
 ROUTES = {
     "ภาพรวม SET + Overlay": page_set_overview,
     "Fund Flow นักลงทุน": page_set_flow,
-    "SET Swing v5.11 + Context": page_swing,
+    "SET Swing v5.13 + Context": page_swing,
+    "สแกน Accum+Squeeze": page_set_accsq,
+    "AI Meeting หุ้น": page_stock_meeting,
     "Scan หุ้น Overall": page_overall,
     "สแกน SET100": page_set_scan,
     "กราฟรายตัว": page_set_chart,
