@@ -181,6 +181,30 @@ _reg = QO.proxy_regime(_fr, n=50)
 check("qo_regime_labels", set(_reg.dropna().unique()) <= {"ขาขึ้น", "ขาลง/ออกข้าง"})
 check("qo_regime_len", len(_reg) == 400)
 
+# ------------------------------------------------ เมนู vs ROUTES (กันบั๊กเดิมซ้ำ)
+# รอบก่อนเปลี่ยนชื่อคีย์ใน ROUTES แต่ลืมแก้ ZONES → KeyError ตอนกดหน้านั้น
+# เทสต์นี้อ่าน app.py ด้วย AST (ไม่ต้องมี streamlit) แล้วเทียบสองฝั่งให้ตรงกัน
+import ast as _ast
+
+_src = open("app.py", encoding="utf-8").read()
+_tree = _ast.parse(_src)
+_zones = _routes = None
+for _n in _tree.body:
+    if isinstance(_n, _ast.Assign) and getattr(_n.targets[0], "id", "") == "ZONES":
+        _zones = _ast.literal_eval(_n.value)
+    if isinstance(_n, _ast.Assign) and getattr(_n.targets[0], "id", "") == "ROUTES":
+        _routes = {_k.value for _k in _n.value.keys}
+        _fns = {getattr(_v, "id", "") for _v in _n.value.values}
+_pages = [p for v in (_zones or {}).values() for p in v]
+_defs = {n.name for n in _tree.body if isinstance(n, _ast.FunctionDef)}
+check("app_zones_found", bool(_zones) and bool(_routes))
+check("app_every_menu_page_has_route", not (set(_pages) - _routes))
+check("app_every_route_is_in_menu", not (_routes - set(_pages)))
+check("app_no_duplicate_menu_page", len(_pages) == len(set(_pages)))
+check("app_every_route_fn_defined", not (_fns - _defs))
+check("app_selfimprove_reachable", "🔬 Self-Improve (ผลออฟไลน์)" in _pages)
+check("app_meeting_page_name_stable", "AI Meeting หุ้น" in _pages)
+
 print(f"\n{PASS} ผ่าน / {FAIL} ตก  (รวม {PASS + FAIL})")
 if FAILED:
     print("ตก:", ", ".join(FAILED))
