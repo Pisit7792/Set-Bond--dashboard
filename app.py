@@ -44,6 +44,9 @@ import set_engine as SE
 import set_swing as SW
 import signals as SG
 import stock_meeting as SM
+import multi_meeting as MM
+import llm_providers as LP
+import quant_evaluation as QE
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -1977,11 +1980,33 @@ def _stk_context(tickers: list[str]) -> dict:
     return ctx
 
 
+def _meet_provider_box(pv: str) -> dict | None:
+    """กล่องกรอก key/model ต่อผู้ให้บริการหนึ่งเจ้า — คืน selection ถ้าเปิดใช้"""
+    spec = LP.PROVIDERS[pv]
+    on = st.checkbox(spec["th"], value=True, key=f"mm_on_{pv}")
+    if not on:
+        return None
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        key = st.text_input("API key", type="password", key=f"mm_key_{pv}",
+                            help=f"ขอ key ฟรีที่ {spec['keys_url']}")
+    with c2:
+        mdl = st.text_input("model id", value=spec["default_model"],
+                            key=f"mm_mdl_{pv}",
+                            help=f"รายชื่อโมเดลเปลี่ยนบ่อย เช็คที่ {spec['models_url']}")
+    st.caption(f"{spec['note']} · โควตาจริงดูที่ {spec['limits_url']}")
+    if not key.strip():
+        return None
+    return {"provider": pv, "api_key": key.strip(), "model": mdl.strip()}
+
+
 def page_stock_meeting():
-    st.caption("**ก่อนใช้:** 'ทีม AI' = โมเดลเดียวเล่นหลายบท — ความเห็นไม่อิสระ"
-               "ทางสถิติ เสียงเอกฉันท์ไม่เพิ่มความน่าจะเป็นถูก | กติกาเหล็ก: "
-               "ห้ามคิดเลข/ตั้งราคาเป้า/เดาข่าว — มติมีแค่ ตาม (เข้าเมื่อกติกา "
-               "v5.13 ครบ) / งด / ค้าน และคำสั่งมีแค่ ทำตามกติกา/ข้าม/ลดขนาด")
+    st.caption("**ก่อนใช้:** " + LP.HONESTY)
+    mode = st.radio("โหมด", ["หลายค่าย (ฟรี — Gemini/Groq/OpenRouter)",
+                             "Anthropic เจ้าเดียวเล่นหลายบท (แบบเดิม)"],
+                    horizontal=False, key="mm_mode")
+    multi = mode.startswith("หลายค่าย")
+
     names = sorted(k.replace(".BK", "") for k in set_prices)
     dflt = [t for t in st.session_state.get("meet_pick", []) if t in names][:6]
     if not dflt:
@@ -1993,9 +2018,7 @@ def page_stock_meeting():
             dflt = []
     picks = st.multiselect("หุ้นที่จะเข้าวาระ (แนะนำ ≤ 6 — token/เวลาเพิ่มตามจำนวน)",
                            names, default=dflt)
-    api_key = st.text_input("Anthropic API key", type="password",
-                            key="stk_meet_key")
-    panel = st.multiselect("บทบาทในทีม", [q["id"] for q in SM.PERSONAS],
+    panel = st.multiselect("มุมมองที่ต้องไล่ให้ครบ", [q["id"] for q in SM.PERSONAS],
                            default=SM.DEFAULT_PANEL,
                            format_func=lambda i: next(q["th"] for q in SM.PERSONAS
                                                       if q["id"] == i))
@@ -2004,8 +2027,100 @@ def page_stock_meeting():
                 "'สแกน Accum+Squeeze' / ใช้บักเก็ต 🟢🟡 อัตโนมัติ")
         return
     ctx = _stk_context(picks)
+    cj = json.dumps(ctx, ensure_ascii=False)
     with st.expander("ข้อมูลที่ส่งให้ AI (โปร่งใส — ทั้งหมดจาก engine)"):
         st.code(json.dumps(ctx, ensure_ascii=False, indent=2))
+
+    # ------------------------------------------------------------------
+    if multi:
+        st.markdown("#### ผู้ให้บริการ (ยิงคนละ 1 call — ประหยัดโควตา free tier)")
+        sels = []
+        for pv in LP.ORDER:
+            with st.container(border=True):
+                s = _meet_provider_box(pv)
+                if s:
+                    sels.append(s)
+        ref = st.checkbox("เพิ่มรอบ 'ผู้ตัดสิน' เฉพาะจุดที่เห็นต่าง (+1 call)",
+                          value=False, key="mm_ref")
+        if len(sels) < 2:
+            st.warning("เปิดใช้ + ใส่ key อย่างน้อย 2 เจ้า ถึงจะเทียบข้ามค่ายได้ "
+                       "(เจ้าเดียวคือกลับไปเป็นความเห็นเดี่ยว)")
+        if st.button(f"🏛️ เปิดประชุม ({len(sels) + (1 if ref else 0)} calls)",
+                     disabled=not sels):
+            msgs = [{"role": "user",
+                     "content": MM.build_solo_prompt(panel, cj)}]
+            results = []
+            prog = st.progress(0.0)
+            for i, s in enumerate(sels):
+                with st.spinner(f"ถาม {LP.PROVIDERS[s['provider']]['th']} ..."):
+                    r = LP.chat(s["provider"], s["api_key"], msgs,
+                                model=s["model"], max_tokens=2200)
+                ana, parsed = MM.parse_solo(r.get("text", ""))
+                results.append({
+                    "label": f"{LP.PROVIDERS[s['provider']]['th'].split(' ')[0]}"
+                             f"/{r.get('model', '')}",
+                    "ok": r["ok"], "error": r.get("error", ""),
+                    "analysis": ana, "parsed": parsed,
+                    "latency_s": r.get("latency_s", 0)})
+                prog.progress((i + 1) / max(1, len(sels)))
+            prog.empty()
+            bundle = MM.collect(results)
+            ref_txt = ""
+            dis = MM.disagreement_list(bundle)
+            if ref and dis and sels:
+                s0 = sels[0]
+                with st.spinner("รอบผู้ตัดสิน (ดูเฉพาะจุดที่เห็นต่าง)..."):
+                    rr = LP.chat(s0["provider"], s0["api_key"],
+                                 [{"role": "user",
+                                   "content": MM.build_referee_prompt(dis, cj)}],
+                                 model=s0["model"], max_tokens=1200)
+                ref_txt = rr["text"] if rr["ok"] else f"(ผู้ตัดสินล้ม: {rr['error']})"
+            st.session_state.setdefault("mm_meetings", []).insert(0, {
+                "เวลา": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "หุ้น": picks, "results": results, "bundle": bundle,
+                "ผู้ตัดสิน": ref_txt})
+
+        for gi, rec in enumerate(st.session_state.get("mm_meetings", [])):
+            b = rec["bundle"]
+            with st.expander(f"{rec['เวลา']} · {', '.join(rec['หุ้น'])}",
+                             expanded=(gi == 0)):
+                st.markdown("**" + MM.headline(b) + "**")
+                for f in b["failed"]:
+                    st.error(f"{f['label']} — {f['error']}")
+                rows = MM.agreement_rows(b)
+                if rows:
+                    st.markdown("**ตารางเทียบมติ** (เรียงจุดที่เห็นต่างขึ้นก่อน)")
+                    st.dataframe(pd.DataFrame(rows).drop(columns=["เห็นต่าง"]),
+                                 use_container_width=True, hide_index=True)
+                    n_d = sum(1 for r in rows if r["เห็นต่าง"])
+                    if n_d:
+                        st.warning(f"⚠️ {n_d} ตัวที่โมเดลต่างค่ายเห็นไม่ตรงกัน — "
+                                   "นี่คือส่วนที่มีข้อมูลมากที่สุด ไม่ใช่ส่วนที่ควรข้าม")
+                if b["conflicts"]:
+                    st.markdown("**ประเด็นค้านที่แต่ละเจ้ายกมา**")
+                    for c in b["conflicts"]:
+                        st.markdown(f"- {c}")
+                if rec.get("ผู้ตัดสิน"):
+                    st.markdown("**ผู้ตัดสิน (ชี้ว่าต้องดูตัวเลขอะไรเพิ่ม — ไม่ออกมติ)**")
+                    st.markdown(rec["ผู้ตัดสิน"])
+                for r in rec["results"]:
+                    with st.expander(f"บทวิเคราะห์เต็ม — {r['label']} "
+                                     f"({r.get('latency_s', 0)}s)"):
+                        st.markdown(r.get("analysis") or "—")
+                st.caption("⚠️ " + MM.DISCLAIMER)
+        if st.session_state.get("mm_meetings"):
+            st.download_button(
+                "⬇️ ดาวน์โหลดประวัติ (JSON)",
+                json.dumps(st.session_state["mm_meetings"],
+                           ensure_ascii=False, indent=1, default=str),
+                file_name="multi_meetings.json", mime="application/json")
+        return
+
+    # ------------------------------------------------------------------
+    # โหมดเดิม: Anthropic เจ้าเดียวเล่นหลายบท (3 รอบ)
+    st.caption("โหมดนี้ = โมเดลเดียวเล่นหลายบท ความเห็นไม่อิสระทางสถิติ")
+    api_key = st.text_input("Anthropic API key", type="password",
+                            key="stk_meet_key")
     if st.button("🏛️ เปิดประชุม (3 API calls)"):
         if not api_key:
             st.error("ต้องใส่ Anthropic API key")
@@ -2016,7 +2131,6 @@ def page_stock_meeting():
                 st.error("ต้องติดตั้งก่อน: pip install anthropic")
                 return
             client = anthropic.Anthropic(api_key=api_key)
-            cj = json.dumps(ctx, ensure_ascii=False)
             msgs = []
             try:
                 with st.spinner("รอบ 1: ลูกทีมแถลง + ลงมติรายหุ้น..."):
@@ -2062,7 +2176,7 @@ def page_stock_meeting():
                         st.markdown(f":{SM.vote_style(v['มติ'])}[**{tk} · "
                                     f"{v['มติ']} {v['conf']}**]")
                         st.caption(v["เหตุผล"] or "—")
-            st.markdown(f"**บทวิเคราะห์หัวหน้าทีม**"
+            st.markdown("**บทวิเคราะห์หัวหน้าทีม**"
                         + (f" (conf {pr['conf_รวม']})" if pr else ""))
             st.markdown(rec["หัวหน้าทีม"])
             if pr:
@@ -2083,6 +2197,116 @@ def page_stock_meeting():
                        json.dumps(hist, ensure_ascii=False, indent=1),
                        file_name="stock_meetings.json", mime="application/json")
     st.caption("⚠️ " + SM.DISCLAIMER)
+
+
+# ===========================================================================
+# 🔬 Self-Improve — อ่านผลลูปที่รันออฟไลน์ (ไม่รันในแอป โดยตั้งใจ)
+# ===========================================================================
+LOOP_STAGES = [
+    ("1-2. Run Backtest + Trade Logs", "✅ ทำ", "set_swing.backtest ต่อหุ้น"),
+    ("3-4. Audit Performance / Assessment", "✅ ทำ",
+     "quant_evaluation: DSR, PBO (CSCV), t-stat, สภาวะตลาด"),
+    ("5-6. Optuna tuning → Best Params", "✅ ทำ (ออฟไลน์)",
+     "quant_optimize: พื้นที่ค้นหา 5 พารามิเตอร์ จดทะเบียนล่วงหน้า"),
+    ("7-8. Validation Backtest", "⚠️ แก้จากผังเดิม",
+     "ผังเดิมวัดผลบนข้อมูลชุดเดิม = ยืนยันตัวเอง เราเปลี่ยนเป็น walk-forward "
+     "วัดบน fold ที่ยังไม่เคยเห็น + purge/embargo"),
+    ("9. Deploy updated params → robot_trading", "❌ ไม่ทำโดยตั้งใจ",
+     "ลูปที่ deploy ตัวเองได้ จะ deploy ผลของ noise ได้ด้วย — "
+     "หยุดที่ 'ผู้สมัคร' ให้คนอนุมัติ แล้ว paper trade ก่อน"),
+]
+
+
+def page_self_improve():
+    st.caption("ลูปนี้ **รันนอกแอป** (`python quant_optimize.py`) แล้วอัปผลมาดูที่นี่ — "
+               "Streamlit Cloud ฟรีมีหน่วยความจำจำกัดและแอปหลับเมื่อไม่มีคนใช้ "
+               "การรัน Optuna หลายร้อย trial ในแอปมักถูกฆ่ากลางคัน")
+    with st.expander("ผังในภาพ vs สิ่งที่ระบบนี้ทำจริง", expanded=True):
+        st.dataframe(pd.DataFrame(
+            [{"ขั้นตอนในผัง": a, "สถานะ": b, "รายละเอียด": c}
+             for a, b, c in LOOP_STAGES]),
+            use_container_width=True, hide_index=True)
+        st.warning("จุดที่ต้องเข้าใจก่อนใช้: ลูปแบบนี้ **โดยธรรมชาติคือเครื่องผลิต "
+                   "overfitting** ยิ่งวนยิ่งเจอ 'ผลดีขึ้น' ที่เป็นเสียงรบกวน "
+                   "ตัวนับ trial จึงสะสมข้ามการรันทุกครั้ง และ Deflated Sharpe "
+                   "จะ **ยากขึ้น** ทุกครั้งที่คุณวนซ้ำ — นั่นคือพฤติกรรมที่ถูกต้อง "
+                   "ไม่ใช่บั๊ก")
+
+    st.markdown("#### วิธีรัน")
+    st.code("pip install optuna            # ไม่ติดตั้งก็ได้ จะใช้ random search แทน\n"
+            "python quant_optimize.py --prices-dir ./data --trials 100 --folds 5\n"
+            "# หรือ\n"
+            "python quant_optimize.py --yf --tickers PTT,AOT,CPALL --period 5y",
+            language="bash")
+
+    up = st.file_uploader("อัปโหลด optimize_result.json", type=["json"])
+    if up is None:
+        st.info("ยังไม่มีไฟล์ผล — รันคำสั่งด้านบนแล้วอัป optimize_result.json มาที่นี่")
+        return
+    try:
+        res = json.load(up)
+    except Exception as e:
+        st.error(f"อ่านไฟล์ไม่ได้: {e}")
+        return
+    if res.get("error"):
+        st.error(res["error"])
+        return
+
+    g = res.get("gate") or {}
+    ok = bool(g.get("pass"))
+    (st.success if ok else st.error)(
+        ("✅ ผ่านประตูตัดสินทุกข้อ" if ok else "❌ ไม่ผ่านประตูตัดสิน")
+        + f" · trial สะสมทั้งหมด {res.get('trials_สะสมทั้งหมด', 0):,} "
+          f"(รอบนี้ {res.get('trials_รอบนี้', 0):,})")
+    if ok:
+        st.warning(QE.VERDICT_NOTE)
+
+    c = st.columns(4)
+    c[0].metric("หุ้น", len(res.get("หุ้น", [])))
+    c[1].metric("แท่งข้อมูล", f"{res.get('จำนวนแท่ง', 0):,}")
+    c[2].metric("OOS Sharpe รวม", res.get("oos_sharpe_รวม") or "—")
+    c[3].metric("พื้นที่ค้นหา", f"{res.get('ขนาดพื้นที่ค้นหา', 0):,} ชุด")
+
+    st.markdown("#### ประตูตัดสิน (ต้องผ่านครบทุกข้อ)")
+    st.dataframe(pd.DataFrame([
+        {"เกณฑ์": ch["ชื่อ"], "ผล": "✅" if ch["ผ่าน"] else "❌",
+         "ค่าที่ได้": ch["ค่า"], "ต้องได้": ch["เกณฑ์"],
+         "หมายเหตุ": ch["หมายเหตุ"]} for ch in g.get("checks", [])]),
+        use_container_width=True, hide_index=True)
+
+    pb = res.get("pbo") or {}
+    if pb.get("note"):
+        st.caption("PBO: " + pb["note"]
+                   + (f" · {pb.get('n_splits', 0)} splits" if pb.get("n_splits") else ""))
+
+    st.markdown("#### ผลรายช่วง walk-forward (train เลือกพารามิเตอร์ / test ไม่เคยเห็น)")
+    folds = res.get("folds") or []
+    if folds:
+        st.dataframe(pd.DataFrame([
+            {"ช่วง": f["fold"], "Sharpe (train)": f.get("train_sharpe"),
+             "Sharpe (OOS)": f.get("oos_sharpe"),
+             "เทรด OOS": f.get("oos_trades"),
+             "กำไรสุทธิ OOS": f.get("oos_net_thb"),
+             "พารามิเตอร์ที่เลือก": json.dumps(f.get("best_cfg", {}),
+                                              ensure_ascii=False)}
+            for f in folds]), use_container_width=True, hide_index=True)
+        drop = [f for f in folds
+                if f.get("train_sharpe") is not None
+                and f.get("oos_sharpe") is not None
+                and f["oos_sharpe"] < f["train_sharpe"] * 0.5]
+        if drop:
+            st.warning(f"⚠️ {len(drop)}/{len(folds)} ช่วง ที่ Sharpe ตกเกินครึ่ง"
+                       "เมื่อออกนอกช่วงจูน — อาการคลาสสิกของ overfitting")
+        cfgs = [json.dumps(f.get("best_cfg", {}), sort_keys=True) for f in folds]
+        if len(set(cfgs)) > 1:
+            st.info(f"พารามิเตอร์ที่ 'ดีที่สุด' เปลี่ยนไป {len(set(cfgs))} ชุด"
+                    f"ในการจูน {len(folds)} ครั้ง — ถ้ามันเปลี่ยนทุกครั้ง "
+                    "แปลว่ากำลังจับเสียงรบกวน ไม่ใช่โครงสร้างที่คงอยู่")
+
+    with st.expander("พื้นที่ค้นหาที่จดทะเบียนไว้ (เปลี่ยนได้ใน quant_optimize.py)"):
+        st.json(res.get("search_space", {}))
+    with st.expander("ไฟล์ผลดิบ"):
+        st.json(res)
 
 
 # ===========================================================================
@@ -2244,7 +2468,8 @@ ROUTES = {
     "Fund Flow นักลงทุน": page_set_flow,
     "SET Swing v5.13 + Context": page_swing,
     "สแกน Accum+Squeeze": page_set_accsq,
-    "AI Meeting หุ้น": page_stock_meeting,
+    "AI Meeting หุ้น (หลายค่าย)": page_stock_meeting,
+    "🔬 Self-Improve (ผลออฟไลน์)": page_self_improve,
     "Scan หุ้น Overall": page_overall,
     "สแกน SET100": page_set_scan,
     "กราฟรายตัว": page_set_chart,
