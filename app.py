@@ -47,6 +47,7 @@ import stock_meeting as SM
 import multi_meeting as MM
 import llm_providers as LP
 import quant_evaluation as QE
+import gold_council as GC
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -67,7 +68,8 @@ ZONES = {
                                 "จำลองสถานการณ์", "วิกฤตแบงก์รัน", "ข่าวสาร",
                                 "ห้องประชุม AI", "ข้อมูลมหภาค", "รายประเทศ (Bond)",
                                 "Trend สินทรัพย์โลก", "World Monitor",
-                                "ทองคำ XAU (RTP v6.4)", "คริปโต (BTC/ETH)"],
+                                "ทองคำ XAU (RTP v6.4)", "🥇 Gold Council",
+                                "คริปโต (BTC/ETH)"],
     "📖 ร่วม": ["Trade Log & สถิติ", "คู่มืออ่านค่า", "ข้อจำกัด & จุดพัฒนา"],
 }
 
@@ -1981,19 +1983,19 @@ def _stk_context(tickers: list[str]) -> dict:
     return ctx
 
 
-def _meet_provider_box(pv: str) -> dict | None:
+def _meet_provider_box(pv: str, ns: str = "mm") -> dict | None:
     """กล่องกรอก key/model ต่อผู้ให้บริการหนึ่งเจ้า — คืน selection ถ้าเปิดใช้"""
     spec = LP.PROVIDERS[pv]
-    on = st.checkbox(spec["th"], value=True, key=f"mm_on_{pv}")
+    on = st.checkbox(spec["th"], value=True, key=f"{ns}_on_{pv}")
     if not on:
         return None
     c1, c2 = st.columns([1, 1])
     with c1:
-        key = st.text_input("API key", type="password", key=f"mm_key_{pv}",
+        key = st.text_input("API key", type="password", key=f"{ns}_key_{pv}",
                             help=f"ขอ key ฟรีที่ {spec['keys_url']}")
     with c2:
         mdl = st.text_input("model id", value=spec["default_model"],
-                            key=f"mm_mdl_{pv}",
+                            key=f"{ns}_mdl_{pv}",
                             help=f"รายชื่อโมเดลเปลี่ยนบ่อย เช็คที่ {spec['models_url']}")
     st.caption(f"{spec['note']} · โควตาจริงดูที่ {spec['limits_url']}")
     if not key.strip():
@@ -2461,6 +2463,247 @@ def page_worldmonitor():
             st.markdown(f"- {c_}")
 
 
+
+# ===========================================================================
+# 🥇 Gold Council — สภาผู้เชี่ยวชาญ XAU (เกต/คำตัดสินคำนวณด้วย Python)
+# ===========================================================================
+@st.cache_data(ttl=900, show_spinner=False)
+def C_gold_tf(sym: str, period: str, interval: str):
+    """โหลดแท่งตาม timeframe — intraday ของ yfinance มีเพดานย้อนหลัง"""
+    try:
+        import yfinance as yf
+        raw = yf.download(sym, period=period, interval=interval,
+                          auto_adjust=True, group_by="ticker", progress=False)
+        if raw is None or len(raw) == 0:
+            return pd.DataFrame()
+        try:
+            sub = SE.extract_ticker(raw, sym)
+        except KeyError:
+            sub = raw
+        return SE.normalize_ohlc(sub)
+    except Exception:
+        return pd.DataFrame()
+
+
+GC_LEAN_COLOR = {"BUY": "green", "SELL": "red", "NEUTRAL": "orange"}
+
+
+def page_gold_council():
+    st.subheader("🥇 Gold Council — สภาผู้เชี่ยวชาญ XAU")
+    st.error("**อ่านก่อนใช้ — จุดที่ต่างจากภาพต้นแบบโดยตั้งใจ:** "
+             "(1) ไม่มีคะแนนถ่วงน้ำหนักทศนิยม (เช่น BUY 4.68) เพราะน้ำหนักตั้งเอง "
+             "และความเห็นแต่ละบทมาจากโมเดลเดียวกัน จึงไม่อิสระ — แสดงเป็น**จำนวนนับ** "
+             "(2) ไม่มี CONFIDENCE % เดี่ยว เพราะ conf ที่ LLM เขียนเองไม่ใช่ความน่าจะเป็น "
+             "ที่ calibrate แล้ว (3) PASS/VETO คำนวณด้วย **Python จากกติกา v6.4** "
+             "ไม่ใช่ AI ตรวจตัวเอง (4) **สภาสร้างไม้เข้าเองไม่ได้** — กติกาไม่ครบ = "
+             "NO TRADE เสมอ (5) บทที่ระบบไม่มีข้อมูล (News, Sentiment) ถูกบังคับให้งดออกเสียง")
+
+    c1, c2, c3, c4 = st.columns(4)
+    gsym = c1.selectbox("สัญลักษณ์", ["PAXG-USD", "GC=F"], 0,
+                        help="ไม่มี spot XAUUSD จาก broker/MT5 ในระบบนี้")
+    tf = c2.selectbox("Timeframe", ["1d (ตามที่ v6.4 ถูกจูนไว้)", "1h", "4h"], 0)
+    interval = {"1d (ตามที่ v6.4 ถูกจูนไว้)": "1d", "1h": "1h", "4h": "4h"}[tf]
+    gper = c3.selectbox("ช่วงข้อมูล", ["1y", "2y", "5y"] if interval == "1d"
+                        else ["60d", "180d", "365d"], 1)
+    min_rr = c4.number_input("Min stop ÷ spread", 1.0, 10.0, 2.0, 0.5)
+    spread_c = st.number_input("Spread ไป-กลับ (¢/oz)", 0.0, 200.0, 25.0, 5.0)
+
+    if interval != "1d":
+        st.warning(f"⚠️ **{interval} เปลี่ยนความหมายของทุกอินดิเคเตอร์** — SMA200 "
+                   f"กลายเป็น 200 แท่ง {interval} ไม่ใช่ 200 วัน และพารามิเตอร์ v6.4 "
+                   "ถูกจูนบนแท่งวัน **ผล backtest ของ v6.4 จึงใช้อ้างอิงกับ timeframe นี้"
+                   "ไม่ได้** · yfinance ยังจำกัดความยาวข้อมูล intraday (1h ~730 วัน) "
+                   "และไม่มี bid/ask — ต่างจากภาพต้นแบบที่ดึงจาก MT5")
+
+    df = C_gold_tf(gsym, gper, interval)
+    if df.empty or len(df) < 260:
+        st.error(f"โหลดข้อมูลไม่พอ ({len(df)} แท่ง) — ลองเปลี่ยนช่วงข้อมูล/สัญลักษณ์ "
+                 "หรือ timeframe เป็น 1d")
+        return
+    dxy = None
+    try:
+        d_ = SE.load_single("DX-Y.NYB", "2y")
+        if not d_.empty and "Close" in d_.columns:
+            s_ = d_["Close"].dropna()
+            dxy = s_.iloc[:, 0] if isinstance(s_, pd.DataFrame) else s_
+    except Exception:
+        pass
+
+    gp = G.GoldParams()
+    try:
+        fr = G.compute_frame(df, dxy_close=dxy, p=gp)
+        stt = G.state_today(fr, gp)
+    except Exception as e:
+        st.error(f"คำนวณ engine v6.4 ไม่ได้: {e}")
+        return
+    gate = GC.risk_gate(stt, min_rr=min_rr, spread_c=spread_c)
+    sess = GC.session_of(df.index[-1])
+    ctx = GC.build_context(gsym, interval, df, stt, gate)
+
+    # ---------------- แถบหัว ----------------
+    h = st.columns(5)
+    h[0].metric("ราคาปิดแท่งล่าสุด", f"${float(df['Close'].iloc[-1]):,.2f}")
+    h[1].metric("Regime", stt.get("regime", "—"))
+    h[2].metric("RSI", stt.get("rsi") or "—")
+    h[3].metric("ATR%", stt.get("atr_pct") or "—")
+    h[4].metric("Vol rank (pct)", stt.get("vol_rank") or "—")
+    st.caption(f"แท่งล่าสุด {df.index[-1]} · ช่วงตลาด: {sess['ช่วง']} — "
+               f"{sess['หมายเหตุ']} · **ข้อมูลเป็นแท่งปิดย้อนหลัง ไม่ใช่ราคา "
+               f"real-time และไม่มี bid/ask**")
+
+    # ---------------- CHIEF VERDICT (คำนวณก่อน ไม่ต้องรอ AI) ----------------
+    verdict0 = GC.chief_verdict(stt, gate, {"counts": {}})
+    left, right = st.columns([2, 1])
+    with left:
+        ok = verdict0["verdict"].startswith("ตามกติกา")
+        st.markdown(
+            f"<div style='border:2px solid {'#2e7d32' if ok else '#8d6e63'};"
+            "border-radius:10px;padding:14px 18px;background:#11150f'>"
+            "<div style='letter-spacing:3px;font-size:12px;color:#9e9e9e'>"
+            "CHIEF VERDICT · คำนวณจากกติกา v6.4 ไม่ใช่จากมติสภา</div>"
+            f"<div style='font-size:34px;font-weight:700;color:"
+            f"{'#66bb6a' if ok else '#d7b56d'}'>{verdict0['verdict']}</div>"
+            f"<div style='color:#cfcfcf'>{verdict0['reason']}</div>"
+            f"<div style='color:#9e9e9e;font-size:13px;margin-top:6px'>"
+            f"{verdict0['override']}</div></div>", unsafe_allow_html=True)
+    with right:
+        (st.success if gate["pass"] else st.error)(
+            ("✅ RISK GATE: PASS" if gate["pass"] else "⛔ RISK GATE: VETO")
+            + (f" · stop÷spread = {gate['rr']}×" if gate.get("rr") else ""))
+        st.dataframe(pd.DataFrame([
+            {"เกต": c["ชื่อ"], "": "✅" if c["ผ่าน"] else "❌",
+             "รายละเอียด": c["รายละเอียด"]} for c in gate["checks"]]),
+            use_container_width=True, hide_index=True)
+
+    with st.expander("เช็คลิสต์ v6.4 รายข้อ (ตัวเลขจริงจาก engine)"):
+        st.dataframe(pd.DataFrame(stt.get("checklist") or []),
+                     use_container_width=True, hide_index=True)
+    with st.expander("ข้อมูลที่ส่งให้สภา (โปร่งใส — ทั้งหมดจาก engine)"):
+        st.code(json.dumps(ctx, ensure_ascii=False, indent=2, default=str))
+
+    # ---------------- ทะเบียนบท + แหล่งข้อมูล ----------------
+    st.markdown("#### THE COUNCIL — 10 บท พร้อมเกรดหลักฐานและแหล่งข้อมูลจริง")
+    st.dataframe(pd.DataFrame([
+        {"กลุ่ม": s["group"], "บท": s["th"], "เกรด": s["grade"],
+         "แหล่งข้อมูลจริง": s["source"],
+         "ข้อจำกัด": s["caveat"] or "—"} for s in GC.SPECIALISTS]),
+        use_container_width=True, hide_index=True)
+    st.warning("บท **News/Macro** และ **Sentiment** ไม่มีแหล่งข้อมูลในระบบนี้ "
+               "(ไม่มีฟีดข่าวทอง ไม่มี COT/ETF flow) — โค้ดบังคับให้เป็น NEUTRAL "
+               "เสมอแม้ LLM จะตอบอย่างอื่น · **Pattern เกรด D** = การเล่าเรื่อง "
+               "ไม่ใช่ detector ที่ backtest ได้")
+
+    panel = st.multiselect("บทที่จะเรียกประชุม",
+                           [s["id"] for s in GC.SPECIALISTS],
+                           default=GC.DEFAULT_PANEL,
+                           format_func=lambda i: GC.spec(i)["th"])
+
+    st.markdown("#### ผู้ให้บริการ (ใช้ key ชุดเดียวกับหน้า AI Meeting)")
+    sels = []
+    for pv in LP.ORDER:
+        with st.container(border=True):
+            s = _meet_provider_box(pv)
+            if s:
+                sels.append(s)
+    if st.button(f"⚔️ เปิดสภา ({len(sels)} calls)", disabled=not sels):
+        cj = json.dumps(ctx, ensure_ascii=False, default=str)
+        msgs = [{"role": "user",
+                 "content": GC.build_council_prompt(panel, cj)}]
+        runs = []
+        for s in sels:
+            with st.spinner(f"ถาม {LP.PROVIDERS[s['provider']]['th']} ..."):
+                r = LP.chat(s["provider"], s["api_key"], msgs,
+                            model=s["model"], max_tokens=2400)
+            ana, parsed = GC.parse_council(r.get("text", ""))
+            runs.append({"label": LP.PROVIDERS[s["provider"]]["th"].split(" ")[0],
+                         "model": r.get("model", ""), "ok": r["ok"],
+                         "error": r.get("error", ""), "analysis": ana,
+                         "parsed": parsed})
+        st.session_state["gc_runs"] = {
+            "เวลา": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "สัญลักษณ์": gsym, "tf": interval, "runs": runs,
+            "verdict_engine": verdict0}
+
+    rec = st.session_state.get("gc_runs")
+    if not rec:
+        st.info("ยังไม่ได้เปิดสภา — CHIEF VERDICT ด้านบนคำนวณจาก engine แล้ว "
+                "และ**ไม่เปลี่ยนตามมติสภา** สภาใช้เพื่อดูมุมที่อาจมองข้ามเท่านั้น")
+        return
+
+    st.markdown(f"#### ผลสภา · {rec['เวลา']} · {rec['สัญลักษณ์']} {rec['tf']}")
+    ok_runs = [r for r in rec["runs"] if r["ok"] and r.get("parsed")]
+    for r in rec["runs"]:
+        if not (r["ok"] and r.get("parsed")):
+            st.error(f"{r['label']} — {r['error'] or 'ตอบไม่ตรงรูปแบบ JSON'}")
+    if not ok_runs:
+        return
+
+    main = ok_runs[0]
+    tal = GC.tally(main["parsed"])
+    v = GC.chief_verdict(stt, gate, tal)
+    cc = st.columns(4)
+    cc[0].metric("BUY", tal["counts"]["BUY"])
+    cc[1].metric("NEUTRAL", tal["counts"]["NEUTRAL"])
+    cc[2].metric("SELL", tal["counts"]["SELL"])
+    cc[3].metric("conf ต่ำ-สูง",
+                 f"{tal['conf_ต่ำสุด']}-{tal['conf_สูงสุด']}"
+                 if tal["conf_ต่ำสุด"] is not None else "—")
+    st.caption("นับเป็นจำนวนเต็มโดยตั้งใจ — ไม่แปลงเป็นคะแนนถ่วงทศนิยม เพราะ"
+               "ความเห็นแต่ละบทมาจากโมเดลเดียวกัน จึงบวกกันเป็นหลักฐานไม่ได้")
+    if tal["งดออกเสียง_ไม่มีข้อมูล"]:
+        st.info("งดออกเสียงเพราะไม่มีข้อมูลในระบบ: "
+                + ", ".join(tal["งดออกเสียง_ไม่มีข้อมูล"]))
+    st.markdown(f"**ผลหลังฟังสภา:** {v['verdict']} · **{v['action']}** "
+                f"— {v['override']}")
+
+    for grp in GC.GROUPS:
+        ids = [s["id"] for s in GC.SPECIALISTS
+               if s["group"] == grp and s["id"] in main["parsed"]["specialists"]]
+        if not ids:
+            continue
+        st.markdown(f"**{grp}**")
+        for sid in ids:
+            d = main["parsed"]["specialists"][sid]
+            s_ = GC.spec(sid)
+            st.markdown(
+                f":{GC_LEAN_COLOR[d['lean']]}[**{s_['th']} · {d['lean']}**] "
+                f"`เกรด {s_['grade']}` conf {d['conf']} — {d['เหตุผล']}")
+            st.progress(min(100, max(0, d["conf"])) / 100.0)
+            st.caption(f"อ้างอิง: {d['อ้างอิง'] or '— (ไม่ได้ระบุตัวเลข)'}")
+
+    if main["parsed"].get("ข้อขัดแย้ง"):
+        st.markdown("**ข้อขัดแย้งในสภา**")
+        for x in main["parsed"]["ข้อขัดแย้ง"]:
+            st.markdown(f"- {x}")
+    if main["parsed"].get("ความเสี่ยงหลัก"):
+        st.markdown("**ความเสี่ยงหลักที่สภายก**")
+        for x in main["parsed"]["ความเสี่ยงหลัก"]:
+            st.markdown(f"- {x}")
+
+    if len(ok_runs) > 1:
+        st.markdown("#### เทียบข้ามค่าย (เฉพาะ lean — verdict ไม่เปลี่ยนตามโมเดล)")
+        rows = []
+        for s_ in GC.SPECIALISTS:
+            row = {"บท": s_["th"], "เกรด": s_["grade"]}
+            leans = []
+            for r in ok_runs:
+                lv = (r["parsed"]["specialists"].get(s_["id"]) or {}).get("lean", "—")
+                row[r["label"]] = lv
+                leans.append(lv)
+            row["ตรงกัน"] = "—" if "—" in leans else (
+                "✅" if len(set(leans)) == 1 else "⚠️ ต่าง")
+            rows.append(row)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True,
+                     hide_index=True)
+        st.caption("โมเดลต่างค่าย = อิสระกว่าโมเดลเดียว แต่ยังไม่อิสระจริง "
+                   "(คลังเทรนทับซ้อน context เดียวกัน) — ตรงกันไม่ได้แปลว่าถูก")
+
+    for r in ok_runs:
+        with st.expander(f"บทวิเคราะห์เต็ม — {r['label']} / {r['model']}"):
+            st.markdown(r.get("analysis") or "—")
+    st.caption("⚠️ " + GC.DISCLAIMER)
+
+
 # ===========================================================================
 # Routing
 # ===========================================================================
@@ -2491,6 +2734,7 @@ ROUTES = {
     "Trend สินทรัพย์โลก": page_g_trend,
     "World Monitor": page_worldmonitor,
     "ทองคำ XAU (RTP v6.4)": page_gold,
+    "🥇 Gold Council": page_gold_council,
     "คริปโต (BTC/ETH)": page_crypto,
     "Trade Log & สถิติ": page_tradelog,
     "คู่มืออ่านค่า": page_glossary,
