@@ -48,6 +48,7 @@ import multi_meeting as MM
 import llm_providers as LP
 import quant_evaluation as QE
 import gold_council as GC
+import portfolio as PF
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -57,7 +58,7 @@ DISCLAIMER = ("เครื่องมือเพื่อการศึก�
 
 ZONES = {
     "🇹🇭 SET (หุ้นไทย)": ["ภาพรวม SET + Overlay", "Fund Flow นักลงทุน",
-                          "SET Swing v5.13 + Context",
+                          "SET Swing v5.13 + Context", "💼 พอร์ตที่ถืออยู่",
                           "Scan หุ้น Overall", "สแกน Accum+Squeeze",
                           "AI Meeting หุ้น",
                           "สแกน SET100", "กราฟรายตัว",
@@ -2704,6 +2705,246 @@ def page_gold_council():
     st.caption("⚠️ " + GC.DISCLAIMER)
 
 
+
+# ===========================================================================
+# 💼 พอร์ตที่ถืออยู่ — 5 บัญชี, CSV, ปันผล/XD, แผนแก้หุ้นติด
+# ===========================================================================
+@st.cache_data(ttl=1800, show_spinner=False)
+def C_pf_prices(tickers: tuple, period: str):
+    """ราคาหุ้นที่ถือซึ่งไม่ได้อยู่ใน universe SET100"""
+    if not tickers:
+        return {}, []
+    return SE.load_universe_prices([f"{t}.BK" for t in tickers], period)
+
+
+def _pf_engine_maps(held: list[str]):
+    """คืน (ราคาล่าสุด, ข้อมูล engine, stop) ของหุ้นที่ถือ — ใช้ v5.13 เท่านั้น"""
+    px, eng, stops, missing = {}, {}, {}, []
+    pool = dict(set_prices)
+    need = [t for t in held if f"{t}.BK" not in pool and t not in pool]
+    if need:
+        extra, failed = C_pf_prices(tuple(sorted(need)), set_period)
+        pool.update(extra)
+        missing = [t.replace(".BK", "") for t in failed]
+    try:
+        rk = C_swing_rank(set_period, tuple(sorted(set_prices)),
+                          str(bench_close.index[-1].date()))
+        rk = rk.set_index("หุ้น")
+    except Exception:
+        rk = pd.DataFrame()
+    p = SW.SwingParams()
+    for t in held:
+        df = pool.get(f"{t}.BK") or pool.get(t)
+        if df is None or len(df) < 60:
+            if t not in missing:
+                missing.append(t)
+            continue
+        px[t] = round(float(df["Close"].iloc[-1]), 2)
+        try:
+            fr = SW.compute_frame(df, bench_close, t, p)
+            stops[t] = PF.chandelier_stop(fr, p.tr_len, p.tr_mlt)
+            eng[t] = {"Regime": ("UP" if bool(fr["regime_up"].iloc[-1])
+                                 else ("DOWN" if bool(fr["regime_dn"].iloc[-1])
+                                       else "MIXED"))}
+        except Exception:
+            eng[t] = {}
+        if t in rk.index:
+            eng.setdefault(t, {})["บักเก็ต"] = rk.loc[t, "บักเก็ต"]
+    return px, eng, stops, missing
+
+
+def page_portfolio():
+    st.subheader("💼 พอร์ตที่ถืออยู่")
+    st.warning("**อ่านก่อนใช้ 3 ข้อ:** (1) หน้านี้ **ไม่มีช่อง 'ราคาขายทำกำไร'** "
+               "เพราะ v5.13 ออกด้วย trailing stop ไม่มี TP ตายตัว — ถ้าเติมเป้าราคา "
+               "ผล backtest ทั้งหมดใช้อ้างอิงไม่ได้ (2) เครื่องคิดเลข 'ซื้อเฉลี่ย' "
+               "คำนวณให้ตามที่ขอ แต่**ไม่มีการบอกว่าราคาไหนน่าเฉลี่ย** เพราะไม่มี"
+               "หลักฐานรองรับ (3) 'ควรเติมตอนไหน' — ไม่มีคำตอบที่เชื่อถือได้ "
+               "ฤดูกาล SET มีจริงแต่เล็กและไม่เสถียร")
+
+    if "pf_df" not in st.session_state:
+        st.session_state["pf_df"] = PF.empty_df()
+
+    c1, c2 = st.columns([2, 1])
+    up = c1.file_uploader("โหลดไฟล์พอร์ต (CSV)", type=["csv"], key="pf_up")
+    if up is not None and c1.button("📥 นำเข้าไฟล์นี้"):
+        d, probs = PF.from_csv(up.getvalue())
+        st.session_state["pf_df"] = d
+        for p_ in probs:
+            st.warning(p_)
+        st.success(f"นำเข้า {len(d)} แถว")
+    if c2.button("➕ เพิ่มแถวว่าง"):
+        st.session_state["pf_df"] = pd.concat(
+            [st.session_state["pf_df"],
+             pd.DataFrame([{c: None for c in PF.COLUMNS}])],
+            ignore_index=True)
+
+    st.markdown(f"#### แก้ไขข้อมูล (บัญชี 1-{PF.MAX_ACCOUNTS})")
+    st.caption("แก้ในตารางได้เลย · ปันผลต่อหุ้นและวันที่ XD กรอกเองจากประกาศของบริษัท "
+               "(ระบบไม่มีฟีดปันผล) · กด 'บันทึกตาราง' แล้วดาวน์โหลดเก็บไว้")
+    edited = st.data_editor(
+        st.session_state["pf_df"], num_rows="dynamic",
+        use_container_width=True, key="pf_editor",
+        column_config={
+            "บัญชี": st.column_config.NumberColumn(min_value=1,
+                                                   max_value=PF.MAX_ACCOUNTS,
+                                                   step=1, default=1),
+            "จำนวนหุ้น": st.column_config.NumberColumn(format="%.0f"),
+            "ราคาต้นทุน": st.column_config.NumberColumn(format="%.4f"),
+            "ปันผลต่อหุ้น": st.column_config.NumberColumn(format="%.4f"),
+            "วันที่ซื้อ": st.column_config.DateColumn(),
+            "วันที่ XD": st.column_config.DateColumn(),
+        })
+    b1, b2 = st.columns([1, 2])
+    if b1.button("💾 บันทึกตาราง"):
+        d, probs = PF.normalize(edited)
+        st.session_state["pf_df"] = d
+        for p_ in probs:
+            st.warning(p_)
+        st.success(f"บันทึกแล้ว {len(d)} แถว")
+    b2.download_button("⬇️ ดาวน์โหลด CSV",
+                       PF.to_csv(st.session_state["pf_df"]),
+                       file_name=f"portfolio_{datetime.now():%Y%m%d}.csv",
+                       mime="text/csv")
+
+    df = st.session_state["pf_df"]
+    if df.empty:
+        st.info("ยังไม่มีข้อมูล — กรอกในตารางหรือนำเข้าไฟล์ CSV")
+        return
+
+    held = sorted(df["หุ้น"].dropna().unique().tolist())
+    with st.spinner("ดึงราคาและคำนวณ engine v5.13..."):
+        px, eng, stops, missing = _pf_engine_maps(held)
+    if missing:
+        st.error("ดึงราคาไม่ได้/ข้อมูลสั้นเกินไป: " + ", ".join(missing)
+                 + " — แถวเหล่านี้จะคำนวณมูลค่าไม่ได้")
+
+    en = PF.enrich(df, px, eng, stops)
+    accounts = sorted(en["บัญชี"].unique().tolist())
+    pick = st.multiselect("เลือกบัญชีที่จะแสดง", accounts, default=accounts)
+    view = en[en["บัญชี"].isin(pick)] if pick else en
+
+    s = PF.summary(view)
+    if s:
+        m = st.columns(5)
+        m[0].metric("มูลค่าตลาดรวม", f"{s['มูลค่าตลาดรวม']:,.0f}")
+        m[1].metric("ต้นทุนรวม", f"{s['ต้นทุนรวม']:,.0f}")
+        m[2].metric("กำไร/ขาดทุน", f"{s['กำไร/ขาดทุน']:,.0f}",
+                    f"{s['%']}%" if s.get("%") is not None else None)
+        m[3].metric("จำนวนตัว", s["จำนวนตัว"])
+        m[4].metric("กระจุกสูงสุด", s.get("กระจุกสูงสุด") or "—")
+
+    st.markdown("#### หุ้นที่ถืออยู่")
+    st.dataframe(view, use_container_width=True, hide_index=True,
+                 column_config={
+                     "มูลค่าตลาด": st.column_config.NumberColumn(format="%.0f"),
+                     "ต้นทุนรวม": st.column_config.NumberColumn(format="%.0f"),
+                     "กำไร/ขาดทุน": st.column_config.NumberColumn(format="%.0f")})
+    st.caption(PF.STOP_NOTE)
+
+    st.markdown("#### การจัดกลุ่มตามกติกา v5.13")
+    acts = []
+    for _, r in view.iterrows():
+        a = PF.action_for(r["ราคาล่าสุด"], r["ราคาต้นทุน"], r["stop ระบบ"],
+                          r.get("Regime"), r.get("บักเก็ต"))
+        acts.append({"บัญชี": r["บัญชี"], "หุ้น": r["หุ้น"],
+                     "ราคาล่าสุด": r["ราคาล่าสุด"], "%": r["%"],
+                     "stop ระบบ": r["stop ระบบ"], "การจัดกลุ่ม": a["action"],
+                     "เหตุผล": a["เหตุผล"], "ที่มา": a["ที่มา"]})
+    st.dataframe(pd.DataFrame(acts), use_container_width=True, hide_index=True)
+    st.info(PF.NO_TP_NOTE)
+
+    # ---------------- ปันผล / XD ----------------
+    st.markdown("#### ปันผล / ถือข้าม XD คุ้มไหม")
+    wht = st.slider("ภาษีเงินปันผลที่ใช้คำนวณ (%)", 0.0, 35.0, 10.0, 0.5,
+                    help="10% = หัก ณ ที่จ่ายมาตรฐาน · ถ้าเลือกรวมคำนวณปลายปี"
+                         "และใช้เครดิตภาษีเงินปันผล ให้ใส่ฐานภาษีจริงของคุณ") / 100.0
+    dv_rows = []
+    for _, r in view.iterrows():
+        if not r.get("ปันผลต่อหุ้น"):
+            continue
+        d = PF.dividend_view(r["จำนวนหุ้น"], r["ราคาต้นทุน"], r["ราคาล่าสุด"],
+                             r["ปันผลต่อหุ้น"], r.get("วันที่ XD"), wht=wht)
+        if not d.get("มีข้อมูล"):
+            continue
+        dv_rows.append({
+            "หุ้น": r["หุ้น"], "ปันผล/หุ้น": r["ปันผลต่อหุ้น"],
+            "yield ปัจจุบัน %": d.get("yield ราคาปัจจุบัน %"),
+            "yield on cost %": d.get("yield on cost %"),
+            "ปันผลสุทธิ (บาท)": d.get("ปันผลสุทธิ"),
+            "สถานะ XD": d.get("สถานะ XD", "ไม่ได้กรอกวัน XD"),
+            "จุดคุ้มทุน": d["จุดคุ้มทุน"].replace("**", "")})
+    if dv_rows:
+        st.dataframe(pd.DataFrame(dv_rows), use_container_width=True,
+                     hide_index=True)
+        st.markdown(f"**เกณฑ์ตัดสิน:** ที่ภาษี {wht * 100:.0f}% การถือข้าม XD "
+                    f"คุ้มก็ต่อเมื่อราคาหลัง XD ลงน้อยกว่า **{(1 - wht) * 100:.0f}%** "
+                    "ของเงินปันผล · ถ้าราคาลงเท่าปันผลพอดี คุณ**ขาดทุนเท่ากับภาษี**")
+    else:
+        st.caption("ยังไม่มีแถวไหนกรอกปันผลต่อหุ้น")
+    st.warning(PF.DIVIDEND_NOTE)
+
+    # ---------------- หุ้นติด ----------------
+    st.markdown("#### หุ้นที่ติดอยู่ — เครื่องคิดเลขการเฉลี่ย")
+    stuck = view[(view["%"].notna()) & (view["%"] < 0)]
+    if stuck.empty:
+        st.success("ไม่มีตัวที่ติดลบในบัญชีที่เลือก")
+    else:
+        st.dataframe(pd.DataFrame([
+            {"หุ้น": r["หุ้น"], "ต้นทุน": r["ราคาต้นทุน"],
+             "ราคาล่าสุด": r["ราคาล่าสุด"], "ขาดทุน %": r["%"],
+             "ต้องขึ้นอีก % ถึงเท่าทุน":
+                 PF.breakeven_gain_pct(r["ราคาล่าสุด"], r["ราคาต้นทุน"]),
+             "Regime": r.get("Regime"), "stop ระบบ": r["stop ระบบ"]}
+            for _, r in stuck.iterrows()]),
+            use_container_width=True, hide_index=True)
+        tk = st.selectbox("เลือกตัวที่จะคำนวณ", stuck["หุ้น"].tolist())
+        row = stuck[stuck["หุ้น"] == tk].iloc[0]
+        q1, q2 = st.columns(2)
+        add_q = q1.number_input("จำนวนหุ้นที่จะซื้อเพิ่ม", 0.0, 1e9,
+                                float(row["จำนวนหุ้น"] or 0), 100.0)
+        add_p = q2.number_input("ราคาที่จะซื้อ", 0.0, 1e6,
+                                float(row["ราคาล่าสุด"] or 0), 0.25)
+        plan = PF.average_down_plan(row["จำนวนหุ้น"], row["ราคาต้นทุน"],
+                                    add_q, add_p,
+                                    port_value=s.get("มูลค่าตลาดรวม"))
+        if plan.get("ok"):
+            k = st.columns(4)
+            k[0].metric("ต้นทุนเฉลี่ยใหม่", plan["ต้นทุนเฉลี่ยใหม่"],
+                        f"{plan['ต้นทุนเฉลี่ยใหม่'] - float(row['ราคาต้นทุน']):+.4f}")
+            k[1].metric("เงินที่ต้องใส่เพิ่ม", f"{plan['เงินที่ต้องใส่เพิ่ม']:,.0f}")
+            k[2].metric("ต้องขึ้น % ถึงเท่าทุน",
+                        f"{plan['หลังเฉลี่ยต้องขึ้น %']}%",
+                        f"{plan['หลังเฉลี่ยต้องขึ้น %'] - plan['เดิมต้องขึ้น % ถึงเท่าทุน']:+.2f}")
+            k[3].metric("ถ้าลงต่ออีก 10% เจ็บเพิ่ม",
+                        f"{plan['ถ้าลงต่ออีก 10% ขาดทุนเพิ่ม (หลัง)']:,.0f}",
+                        f"{plan['ถ้าลงต่ออีก 10% ขาดทุนเพิ่ม (หลัง)'] - plan['ถ้าลงต่ออีก 10% ขาดทุนเพิ่ม (ก่อน)']:+,.0f}",
+                        delta_color="inverse")
+            st.caption("ขาดทุนที่ยังไม่รับรู้ ณ ราคานี้ "
+                       f"{plan['ขาดทุนที่ยังไม่รับรู้ ณ ราคานี้ (ก่อน)']:,.0f} → "
+                       f"{plan['ขาดทุนที่ยังไม่รับรู้ ณ ราคานี้ (หลัง)']:,.0f} บาท "
+                       "— **ไม่เปลี่ยน** เพราะซื้อที่ราคาตลาด สิ่งที่โตคือความไวต่อการลงต่อ")
+            if "น้ำหนักในพอร์ต หลัง %" in plan:
+                st.caption(f"น้ำหนักในพอร์ต {plan['น้ำหนักในพอร์ต ก่อน %']}% → "
+                           f"**{plan['น้ำหนักในพอร์ต หลัง %']}%** · "
+                           f"ค่าธรรมเนียมซื้อ {plan['ค่าธรรมเนียมซื้อ']:,.0f} บาท")
+            st.error(PF.AVERAGE_DOWN_WARNING)
+            st.markdown("**คำถามที่ต้องตอบก่อน (ระบบไม่ตอบให้):**")
+            for i, q in enumerate(PF.AVERAGE_DOWN_CHECKLIST, 1):
+                st.markdown(f"{i}. {q}")
+            eng_r = eng.get(tk, {})
+            if eng_r.get("Regime") == "DOWN":
+                st.error(f"⚠️ engine ระบุ regime ของ {tk} เป็น **ขาลง** — "
+                         "กติกา v5.13 ไม่เข้าฝั่ง long ในสภาวะนี้ตั้งแต่ต้น")
+            elif str(eng_r.get("บักเก็ต", "")).startswith("🟢"):
+                st.info(f"engine มีสัญญาณเข้าใหม่ของ {tk} วันนี้ — ถ้าจะซื้อ "
+                        "ให้คิดเป็น**ไม้ใหม่**ที่มี stop ของตัวเอง ไม่ใช่การเฉลี่ยของเดิม")
+        else:
+            st.caption(plan.get("เหตุผล", ""))
+    st.info(PF.TIMING_NOTE)
+    st.caption("⚠️ " + PF.DISCLAIMER)
+
+
 # ===========================================================================
 # Routing
 # ===========================================================================
@@ -2711,6 +2952,7 @@ ROUTES = {
     "ภาพรวม SET + Overlay": page_set_overview,
     "Fund Flow นักลงทุน": page_set_flow,
     "SET Swing v5.13 + Context": page_swing,
+    "💼 พอร์ตที่ถืออยู่": page_portfolio,
     "สแกน Accum+Squeeze": page_set_accsq,
     "AI Meeting หุ้น": page_stock_meeting,
     "🔬 Self-Improve (ผลออฟไลน์)": page_self_improve,
