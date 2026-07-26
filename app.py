@@ -2723,16 +2723,21 @@ def _pool_lookup(pool: dict, ticker: str):
     return None
 
 
-MODULE_MIN = {"portfolio": ("PF", "1.1"), "gold_council": ("GC", "v1.0"),
+MODULE_MIN = {"portfolio": ("PF", "1.2"), "gold_council": ("GC", "v1.0"),
               "multi_meeting": ("MM", "v1.0"), "llm_providers": ("LP", "1.0"),
               "quant_evaluation": ("QE", "1.0")}
 
 
-def _stale_modules() -> list[str]:
+def _stale_modules(only: list[str] | None = None) -> list[str]:
     """เทียบเวอร์ชันโมดูลกับที่ app.py ต้องการ — กันเคสอัปโหลดไม่ครบ
-    (เจอมาแล้ว: app.py ใหม่ + portfolio.py เก่า = AttributeError อ่านไม่รู้เรื่อง)"""
+    (เจอมาแล้ว: app.py ใหม่ + portfolio.py เก่า = AttributeError อ่านไม่รู้เรื่อง)
+
+    only = รายชื่อโมดูลที่ "หน้านั้นใช้จริง" — ไม่บล็อกเพราะไฟล์ที่ไม่เกี่ยวข้อง
+    """
     out = []
     for mod, (alias, want) in MODULE_MIN.items():
+        if only is not None and mod not in only:
+            continue
         obj = globals().get(alias)
         if obj is None:
             out.append(f"{mod}.py (import ไม่ได้)")
@@ -2787,8 +2792,7 @@ def _pf_engine_maps(held: list[str]):
 
 
 def page_portfolio():
-    st.subheader("💼 พอร์ตที่ถืออยู่")
-    _stale = _stale_modules()
+    _stale = _stale_modules(only=["portfolio"])
     if _stale:
         st.error("**ไฟล์บน repo ไม่ตรงกับ app.py — อัปโหลดไฟล์เหล่านี้ทับแล้ว "
                  "Reboot:** " + " · ".join(_stale))
@@ -2820,6 +2824,11 @@ def page_portfolio():
     st.markdown(f"#### แก้ไขข้อมูล (บัญชี 1-{PF.MAX_ACCOUNTS})")
     st.caption("แก้ในตารางได้เลย · ปันผลต่อหุ้นและวันที่ XD กรอกเองจากประกาศของบริษัท "
                "(ระบบไม่มีฟีดปันผล) · กด 'บันทึกตาราง' แล้วดาวน์โหลดเก็บไว้")
+    # รายชื่อหุ้นใน drop-down = universe ที่ตั้งไว้ + ตัวที่มีอยู่ในไฟล์แล้ว
+    # (ถ้าถือหุ้นนอก universe ให้เพิ่มชื่อในช่อง "รายชื่อหุ้น" ที่ sidebar ก่อน)
+    _uni = {str(t).replace(".BK", "").upper() for t in tickers}
+    _have = {str(x).upper() for x in st.session_state["pf_df"]["หุ้น"].dropna()}
+    _opts = sorted(_uni | _have)
     edited = st.data_editor(
         st.session_state["pf_df"], num_rows="dynamic",
         use_container_width=True, key="pf_editor",
@@ -2827,12 +2836,20 @@ def page_portfolio():
             "บัญชี": st.column_config.NumberColumn(min_value=1,
                                                    max_value=PF.MAX_ACCOUNTS,
                                                    step=1, default=1),
-            "จำนวนหุ้น": st.column_config.NumberColumn(format="%.0f"),
-            "ราคาต้นทุน": st.column_config.NumberColumn(format="%.4f"),
-            "ปันผลต่อหุ้น": st.column_config.NumberColumn(format="%.4f"),
+            "หุ้น": st.column_config.SelectboxColumn(options=_opts,
+                                                     help="เลือกจากรายชื่อ · "
+                                                          "ถ้าไม่มีตัวที่ถือ ให้เพิ่มใน "
+                                                          "'รายชื่อหุ้น' ที่แถบข้างก่อน"),
+            "จำนวนหุ้น": st.column_config.NumberColumn(min_value=0.0, step=1.0,
+                                                       format="%.2f"),
+            "ราคาต้นทุน": st.column_config.NumberColumn(min_value=0.0, step=0.01,
+                                                        format="%.4f"),
+            "ปันผลต่อหุ้น": st.column_config.NumberColumn(min_value=0.0, step=0.01,
+                                                          format="%.4f"),
             "วันที่ซื้อ": st.column_config.DateColumn(),
-            "วันที่ XD": st.column_config.DateColumn(),
         })
+    st.caption(f"รายชื่อใน drop-down มี {len(_opts)} ตัว (จาก universe ที่ตั้งไว้) · "
+               "ช่องราคาและปันผลใส่ทศนิยมได้ถึง 4 ตำแหน่ง")
     b1, b2 = st.columns([1, 2])
     if b1.button("💾 บันทึกตาราง"):
         d, probs = PF.normalize(edited)
@@ -2902,7 +2919,7 @@ def page_portfolio():
         if not r.get("ปันผลต่อหุ้น"):
             continue
         d = PF.dividend_view(r["จำนวนหุ้น"], r["ราคาต้นทุน"], r["ราคาล่าสุด"],
-                             r["ปันผลต่อหุ้น"], r.get("วันที่ XD"), wht=wht)
+                             r["ปันผลต่อหุ้น"], None, wht=wht)
         if not d.get("มีข้อมูล"):
             continue
         dv_rows.append({
@@ -2910,7 +2927,6 @@ def page_portfolio():
             "yield ปัจจุบัน %": d.get("yield ราคาปัจจุบัน %"),
             "yield on cost %": d.get("yield on cost %"),
             "ปันผลสุทธิ (บาท)": d.get("ปันผลสุทธิ"),
-            "สถานะ XD": d.get("สถานะ XD", "ไม่ได้กรอกวัน XD"),
             "จุดคุ้มทุน": d["จุดคุ้มทุน"].replace("**", "")})
     if dv_rows:
         st.dataframe(pd.DataFrame(dv_rows), use_container_width=True,

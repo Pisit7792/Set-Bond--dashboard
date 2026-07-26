@@ -24,7 +24,9 @@ def check(name, cond):
 
 
 # ------------------------------------------------------------ โครงข้อมูล
-check("pf_columns_8", len(PF.COLUMNS) == 8)
+check("pf_columns_7_no_xd", len(PF.COLUMNS) == 7 and "วันที่ XD" not in PF.COLUMNS)
+check("pf_dropped_cols_declared", PF.DROPPED_COLS == ["วันที่ XD"])
+check("pf_version_bumped", PF.VERSION == "1.2")
 check("pf_empty_has_cols", list(PF.empty_df().columns) == PF.COLUMNS)
 check("pf_max_accounts_5", PF.MAX_ACCOUNTS == 5)
 check("pf_cost_matches_v513", abs(PF.COST_SIDE_PCT - 0.3175) < 1e-9)
@@ -33,7 +35,7 @@ _raw = pd.DataFrame({
     "บัญชี": [1, 9, "2"], "หุ้น": ["ptt.bk", "AOT", ""],
     "จำนวนหุ้น": [1000, "500", 100], "ราคาต้นทุน": [35.0, 60.0, 1.0],
     "วันที่ซื้อ": ["2025-01-05", "ไม่ใช่วันที่", None],
-    "ปันผลต่อหุ้น": [2.0, None, None], "วันที่ XD": ["2026-03-01", None, None],
+    "ปันผลต่อหุ้น": [2.0, None, None],
     "หมายเหตุ": [None, "x", None]})
 _d, _pb = PF.normalize(_raw)
 check("pf_norm_uppercases_and_strips_bk", _d.iloc[0]["หุ้น"] == "PTT")
@@ -48,11 +50,30 @@ check("pf_norm_missing_col_reported",
           PF.normalize(pd.DataFrame({"หุ้น": ["A"]}))[1]))
 check("pf_norm_empty_ok", len(PF.normalize(pd.DataFrame())[0]) == 0)
 
+_old = pd.DataFrame({"บัญชี": [1], "หุ้น": ["PTT"], "จำนวนหุ้น": [100],
+                     "ราคาต้นทุน": [35.5], "วันที่ซื้อ": ["2025-01-01"],
+                     "ปันผลต่อหุ้น": [1.25], "วันที่ XD": ["2026-03-01"],
+                     "หมายเหตุ": [""]})
+_od, _op = PF.normalize(_old)
+check("pf_old_file_still_loads", len(_od) == 1)
+check("pf_old_file_reports_dropped_col",
+      any("เลิกเก็บแล้ว" in p for p in _op))
+check("pf_old_file_no_xd_column", "วันที่ XD" not in _od.columns)
+check("pf_decimal_cost_preserved", float(_od.iloc[0]["ราคาต้นทุน"]) == 35.5)
+check("pf_decimal_div_preserved", float(_od.iloc[0]["ปันผลต่อหุ้น"]) == 1.25)
+_dec, _ = PF.from_csv(PF.to_csv(_od))
+check("pf_decimal_survives_csv_roundtrip",
+      float(_dec.iloc[0]["ราคาต้นทุน"]) == 35.5)
+check("pf_enrich_has_no_xd_col",
+      "วันที่ XD" not in PF.enrich(_od, {"PTT": 40.0}).columns)
+check("pf_div_works_without_xd",
+      PF.dividend_view(100, 35.5, 40.0, 1.25, None)["มีข้อมูล"])
+
 _csv = PF.to_csv(_d)
 _back, _ = PF.from_csv(_csv)
 check("pf_csv_roundtrip_rows", len(_back) == len(_d))
 check("pf_csv_roundtrip_ticker", _back.iloc[0]["หุ้น"] == "PTT")
-check("pf_csv_roundtrip_date", _back.iloc[0]["วันที่ XD"] == date(2026, 3, 1))
+check("pf_csv_roundtrip_date", _back.iloc[0]["วันที่ซื้อ"] == date(2025, 1, 5))
 check("pf_csv_roundtrip_no_nat_text", "NaT" not in _csv)
 check("pf_csv_bad_input", PF.from_csv(b"\x00\x01")[1] != [])
 
@@ -109,7 +130,7 @@ check("pf_stop_note_admits_not_from_entry", "ไม่ได้ไล่ปร�
 
 # ------------------------------------------------------------- ปันผล/XD
 _dv = PF.dividend_view(1000, 35.0, 40.0, 2.0, date(2026, 3, 1),
-                       today=date(2026, 2, 1))
+                       today=date(2026, 2, 1))  # xd ยังรับได้ แต่ไฟล์ไม่เก็บแล้ว
 check("pf_div_gross", _dv["ปันผลรวม (ก่อนภาษี)"] == 2000.0)
 check("pf_div_net_after_10pct", _dv["ปันผลสุทธิ"] == 1800.0)
 check("pf_div_yield_on_cost", _dv["yield on cost %"] == round(2 / 35 * 100, 2))

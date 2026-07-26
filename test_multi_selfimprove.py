@@ -240,6 +240,26 @@ check("app_module_min_matches_actual",
       all(str(getattr(__import__(m), "VERSION", "")) == want
           for m, (_a, want) in (_mmin or {}).items()))
 
+# guard ต้องเช็คเฉพาะโมดูลที่หน้านั้นใช้ — ไม่บล็อกเพราะไฟล์ที่ไม่เกี่ยวข้อง
+if "_stale_modules" in _fns and _mmin:
+    _ns["MODULE_MIN"] = _mmin
+    exec(compile(_ast.Module(body=[_fns["_stale_modules"]], type_ignores=[]),
+                 "app", "exec"), _ns)
+    class _Old:
+        VERSION = "0.0"
+    _ns.update(PF=__import__("portfolio"), GC=__import__("gold_council"),
+               MM=__import__("multi_meeting"), LP=_Old,
+               QE=__import__("quant_evaluation"))
+    check("app_guard_ignores_irrelevant_module",
+          _ns["_stale_modules"](only=["portfolio"]) == [])
+    check("app_guard_catches_relevant_module",
+          len(_ns["_stale_modules"](only=["llm_providers"])) == 1)
+    check("app_guard_full_scan_still_works",
+          len(_ns["_stale_modules"]()) == 1)
+    _ns["PF"] = None
+    check("app_guard_reports_import_failure",
+          "import ไม่ได้" in _ns["_stale_modules"](only=["portfolio"])[0])
+
 print(f"\n{PASS} ผ่าน / {FAIL} ตก  (รวม {PASS + FAIL})")
 if FAILED:
     print("ตก:", ", ".join(FAILED))
