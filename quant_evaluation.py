@@ -30,6 +30,8 @@ import pandas as pd
 import set_engine as SE
 
 # เกณฑ์ประตู (แก้ได้ แต่ค่าตั้งต้นอิงเอกสารใน project)
+VERSION = "1.0"
+
 DSR_MIN = 0.95          # DSR เป็นความน่าจะเป็น (แบบ PSR) — 0.95 = นัยสำคัญปกติ
 PBO_MAX = 0.25
 TSTAT_MIN = 3.0         # Harvey-Liu-Zhu: ของใหม่ต้อง t > 3 ไม่ใช่ 2

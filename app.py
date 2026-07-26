@@ -2709,6 +2709,39 @@ def page_gold_council():
 # ===========================================================================
 # 💼 พอร์ตที่ถืออยู่ — 5 บัญชี, CSV, ปันผล/XD, แผนแก้หุ้นติด
 # ===========================================================================
+def _pool_lookup(pool: dict, ticker: str):
+    """หา OHLCV จาก pool — เขียนไว้ใน app.py เองเพื่อไม่ให้พังถ้า portfolio.py
+    บน repo เป็นเวอร์ชันเก่า · ห้ามใช้ or/and/if กับ DataFrame (pandas จะโยน
+    ValueError) ต้องเทียบ `is None` เท่านั้น"""
+    if not pool or not ticker:
+        return None
+    t = str(ticker).upper().replace(".BK", "").strip()
+    for key in (f"{t}.BK", t):
+        d = pool.get(key)
+        if d is not None and len(d) > 0:
+            return d
+    return None
+
+
+MODULE_MIN = {"portfolio": ("PF", "1.1"), "gold_council": ("GC", "v1.0"),
+              "multi_meeting": ("MM", "v1.0"), "llm_providers": ("LP", "1.0"),
+              "quant_evaluation": ("QE", "1.0")}
+
+
+def _stale_modules() -> list[str]:
+    """เทียบเวอร์ชันโมดูลกับที่ app.py ต้องการ — กันเคสอัปโหลดไม่ครบ
+    (เจอมาแล้ว: app.py ใหม่ + portfolio.py เก่า = AttributeError อ่านไม่รู้เรื่อง)"""
+    out = []
+    for mod, (alias, want) in MODULE_MIN.items():
+        obj = globals().get(alias)
+        if obj is None:
+            out.append(f"{mod}.py (import ไม่ได้)")
+        elif str(getattr(obj, "VERSION", "")) != want:
+            out.append(f"{mod}.py (ต้องการ {want} · พบ "
+                       f"{getattr(obj, 'VERSION', 'ไม่มี VERSION')})")
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def C_pf_prices(tickers: tuple, period: str):
     """ราคาหุ้นที่ถือซึ่งไม่ได้อยู่ใน universe SET100"""
@@ -2734,7 +2767,7 @@ def _pf_engine_maps(held: list[str]):
         rk = pd.DataFrame()
     p = SW.SwingParams()
     for t in held:
-        df = PF.pick_frame(pool, t)
+        df = _pool_lookup(pool, t)
         if df is None or len(df) < 60:
             if t not in missing:
                 missing.append(t)
@@ -2755,6 +2788,11 @@ def _pf_engine_maps(held: list[str]):
 
 def page_portfolio():
     st.subheader("💼 พอร์ตที่ถืออยู่")
+    _stale = _stale_modules()
+    if _stale:
+        st.error("**ไฟล์บน repo ไม่ตรงกับ app.py — อัปโหลดไฟล์เหล่านี้ทับแล้ว "
+                 "Reboot:** " + " · ".join(_stale))
+        return
     st.warning("**อ่านก่อนใช้ 3 ข้อ:** (1) หน้านี้ **ไม่มีช่อง 'ราคาขายทำกำไร'** "
                "เพราะ v5.13 ออกด้วย trailing stop ไม่มี TP ตายตัว — ถ้าเติมเป้าราคา "
                "ผล backtest ทั้งหมดใช้อ้างอิงไม่ได้ (2) เครื่องคิดเลข 'ซื้อเฉลี่ย' "

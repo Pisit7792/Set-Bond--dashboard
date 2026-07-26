@@ -40,6 +40,8 @@ import numpy as np
 import pandas as pd
 
 # ต้นทุนต่อข้างของ v5.13: (คอม 0.15 × VAT 1.07 + ค่าธรรมเนียมตลาด 0.007 + สเปรด 0.15)%
+VERSION = "1.1"   # 1.1 = เพิ่ม pick_frame + แก้ป้าย trail
+
 COST_SIDE_PCT = (0.15 * 1.07 + 0.007 + 0.15)
 WHT_DIVIDEND = 0.10          # หัก ณ ที่จ่ายมาตรฐานของบุคคลธรรมดาไทย
 MAX_ACCOUNTS = 5

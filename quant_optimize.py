@@ -40,6 +40,7 @@ import pandas as pd
 import quant_evaluation as QE
 import set_swing as SW
 
+VERSION = "1.0"
 LEDGER = "optimize_ledger.json"
 
 # --- พื้นที่ค้นหาที่ "จดทะเบียนไว้ล่วงหน้า" ---------------------------------

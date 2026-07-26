@@ -205,6 +205,41 @@ check("app_every_route_fn_defined", not (_fns - _defs))
 check("app_selfimprove_reachable", "🔬 Self-Improve (ผลออฟไลน์)" in _pages)
 check("app_meeting_page_name_stable", "AI Meeting หุ้น" in _pages)
 
+# ---- ตัวช่วยใน app.py ที่ต้องไม่พึ่งโมดูลอื่น (บั๊ก AttributeError รอบก่อน) ----
+import types as _types
+
+_fns = {n.name: n for n in _tree.body if isinstance(n, _ast.FunctionDef)}
+check("app_has_inline_pool_lookup", "_pool_lookup" in _fns)
+check("app_has_version_guard", "_stale_modules" in _fns)
+_ns = _types.ModuleType("_probe").__dict__
+if "_pool_lookup" in _fns:
+    exec(compile(_ast.Module(body=[_fns["_pool_lookup"]], type_ignores=[]),
+                 "app", "exec"), _ns)
+    _pool = {"PTT.BK": pd.DataFrame({"Close": [1.0]}),
+             "AOT": pd.DataFrame({"Close": [2.0]}),
+             "E.BK": pd.DataFrame({"Close": []})}
+    _lk = _ns["_pool_lookup"]
+    check("app_lookup_with_bk", _lk(_pool, "PTT") is not None)
+    check("app_lookup_without_bk", _lk(_pool, "AOT") is not None)
+    check("app_lookup_input_has_bk", _lk(_pool, "ptt.bk") is not None)
+    check("app_lookup_missing_none", _lk(_pool, "ZZZ") is None)
+    check("app_lookup_empty_frame_none", _lk(_pool, "E") is None)
+    check("app_lookup_blank_inputs",
+          _lk({}, "PTT") is None and _lk(_pool, "") is None)
+for _m, _al in [("portfolio", "PF"), ("gold_council", "GC"),
+                ("multi_meeting", "MM"), ("llm_providers", "LP"),
+                ("quant_evaluation", "QE")]:
+    check(f"mod_{_m}_has_version",
+          bool(getattr(__import__(_m), "VERSION", "")))
+_mmin = None
+for _n in _tree.body:
+    if isinstance(_n, _ast.Assign) and getattr(_n.targets[0], "id", "") == "MODULE_MIN":
+        _mmin = _ast.literal_eval(_n.value)
+check("app_module_min_declared", isinstance(_mmin, dict) and len(_mmin) >= 5)
+check("app_module_min_matches_actual",
+      all(str(getattr(__import__(m), "VERSION", "")) == want
+          for m, (_a, want) in (_mmin or {}).items()))
+
 print(f"\n{PASS} ผ่าน / {FAIL} ตก  (รวม {PASS + FAIL})")
 if FAILED:
     print("ตก:", ", ".join(FAILED))

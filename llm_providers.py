@@ -28,6 +28,8 @@ import time
 # ทะเบียนผู้ให้บริการ
 # ---------------------------------------------------------------------------
 
+VERSION = "1.0"
+
 PROVIDERS: dict[str, dict] = {
     "gemini": {
         "th": "Google Gemini (AI Studio)",
