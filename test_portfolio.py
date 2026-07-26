@@ -74,6 +74,24 @@ check("pf_summary_totals", _s["มูลค่าตลาดรวม"] == 6500
 check("pf_summary_pl", _s["กำไร/ขาดทุน"] == round(65000 - 65000.0, 2))
 check("pf_summary_empty", PF.summary(pd.DataFrame()) == {})
 
+# --------------------------------- ค้นหา frame (บั๊ก DataFrame truthiness)
+_pool = {"PTT.BK": pd.DataFrame({"Close": [1.0, 2.0]}),
+         "AOT": pd.DataFrame({"Close": [3.0]}),
+         "EMPTY.BK": pd.DataFrame({"Close": []})}
+check("pf_pick_with_bk", PF.pick_frame(_pool, "PTT") is not None)
+check("pf_pick_without_bk", PF.pick_frame(_pool, "AOT") is not None)
+check("pf_pick_input_has_bk", PF.pick_frame(_pool, "ptt.bk") is not None)
+check("pf_pick_missing_is_none", PF.pick_frame(_pool, "ZZZ") is None)
+check("pf_pick_empty_frame_is_none", PF.pick_frame(_pool, "EMPTY") is None)
+check("pf_pick_empty_pool", PF.pick_frame({}, "PTT") is None)
+check("pf_pick_blank_ticker", PF.pick_frame(_pool, "") is None)
+try:
+    _ = bool(PF.pick_frame(_pool, "PTT") is not None)
+    _ok_no_valueerror = True
+except ValueError:
+    _ok_no_valueerror = False
+check("pf_pick_never_raises_valueerror", _ok_no_valueerror)
+
 # ------------------------------------------------------------ stop v5.13
 _n = 100
 _idx = pd.bdate_range("2025-01-01", periods=_n)
@@ -117,8 +135,14 @@ check("pf_div_note_cites_cost_and_measurement",
       "ต้องวัดเป็นรายตัว" in PF.DIVIDEND_NOTE and "0.32" in PF.DIVIDEND_NOTE)
 
 # ----------------------------------------------------------- การจัดกลุ่ม
-check("pf_action_stop_hit",
-      "หลุด stop" in PF.action_for(30.0, 35.0, 32.0, "UP", None)["action"])
+_a_stop = PF.action_for(30.0, 35.0, 32.0, "UP", None)
+check("pf_action_below_trail", "ต่ำกว่าระดับ trail" in _a_stop["action"])
+check("pf_action_does_not_claim_your_stop_hit",
+      "ไม่ได้แปลว่าหลุด stop ตามแผนของคุณ" in _a_stop["เหตุผล"])
+_a_win = PF.action_for(40.0, 35.0, 42.0, "UP", None)
+check("pf_action_profitable_but_below_trail_not_mislabelled",
+      "ต่ำกว่าระดับ trail" in _a_win["action"]
+      and "ไม่ใช่ค่าจากวันที่คุณซื้อ" in _a_win["ที่มา"])
 check("pf_action_regime_down",
       "ไม่สนับสนุน" in PF.action_for(40.0, 35.0, 30.0, "DOWN", None)["action"])
 check("pf_action_signal_today",

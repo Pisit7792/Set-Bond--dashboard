@@ -2734,7 +2734,7 @@ def _pf_engine_maps(held: list[str]):
         rk = pd.DataFrame()
     p = SW.SwingParams()
     for t in held:
-        df = pool.get(f"{t}.BK") or pool.get(t)
+        df = PF.pick_frame(pool, t)
         if df is None or len(df) < 60:
             if t not in missing:
                 missing.append(t)
@@ -2840,7 +2840,7 @@ def page_portfolio():
                      "มูลค่าตลาด": st.column_config.NumberColumn(format="%.0f"),
                      "ต้นทุนรวม": st.column_config.NumberColumn(format="%.0f"),
                      "กำไร/ขาดทุน": st.column_config.NumberColumn(format="%.0f")})
-    st.caption(PF.STOP_NOTE)
+    st.caption("⚠️ " + PF.STOP_NOTE)
 
     st.markdown("#### การจัดกลุ่มตามกติกา v5.13")
     acts = []
@@ -2901,10 +2901,17 @@ def page_portfolio():
         tk = st.selectbox("เลือกตัวที่จะคำนวณ", stuck["หุ้น"].tolist())
         row = stuck[stuck["หุ้น"] == tk].iloc[0]
         q1, q2 = st.columns(2)
+        def _num(v, dflt=0.0):
+            # NaN เป็น truthy ใน Python → `v or 0` ใช้ไม่ได้ ต้องเช็ค NaN ตรง ๆ
+            try:
+                f = float(v)
+                return dflt if f != f else f
+            except (TypeError, ValueError):
+                return dflt
         add_q = q1.number_input("จำนวนหุ้นที่จะซื้อเพิ่ม", 0.0, 1e9,
-                                float(row["จำนวนหุ้น"] or 0), 100.0)
+                                _num(row["จำนวนหุ้น"]), 100.0)
         add_p = q2.number_input("ราคาที่จะซื้อ", 0.0, 1e6,
-                                float(row["ราคาล่าสุด"] or 0), 0.25)
+                                _num(row["ราคาล่าสุด"]), 0.25)
         plan = PF.average_down_plan(row["จำนวนหุ้น"], row["ราคาต้นทุน"],
                                     add_q, add_p,
                                     port_value=s.get("มูลค่าตลาดรวม"))

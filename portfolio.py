@@ -129,6 +129,24 @@ def from_csv(src) -> tuple[pd.DataFrame, list[str]]:
 # ระดับ stop ตามสูตรเดียวกับ v5.13 (ไม่ประดิษฐ์กฎใหม่)
 # ---------------------------------------------------------------------------
 
+def pick_frame(pool: dict, ticker: str):
+    """หา OHLCV ของหุ้นจาก pool ไม่ว่า key จะมี .BK หรือไม่
+
+    เขียนเป็นฟังก์ชันแยกเพราะเคยพลาด: `pool.get(f"{t}.BK") or pool.get(t)`
+    ทำให้ pandas เรียก DataFrame.__bool__ แล้วโยน ValueError
+    ("The truth value of a DataFrame is ambiguous") → ห้ามใช้ or/and/if
+    กับ DataFrame ต้องเทียบ `is None` เท่านั้น
+    """
+    if not pool or not ticker:
+        return None
+    t = str(ticker).upper().replace(".BK", "").strip()
+    for key in (f"{t}.BK", t):
+        df = pool.get(key)
+        if df is not None and len(df) > 0:
+            return df
+    return None
+
+
 def chandelier_stop(fr: pd.DataFrame, tr_len: int = 22,
                     tr_mlt: float = 3.0) -> float:
     """Chandelier ฝั่ง long = สูงสุด tr_len แท่ง − tr_mlt × ATR
@@ -277,9 +295,15 @@ def action_for(price, cost, stop, regime, bucket) -> dict:
         return {"action": "ไม่มีราคา", "เหตุผล": "ดึงราคาล่าสุดไม่ได้",
                 "ที่มา": "—"}
     if stop == stop and stop is not None and price < stop:
-        return {"action": "⛔ หลุด stop ระบบแล้ว",
-                "เหตุผล": f"ราคา {price:.2f} < stop {stop:.2f}",
-                "ที่มา": "Chandelier v5.13 (ค่าวันนี้)"}
+        # ระวังการตีความ: Chandelier ที่คำนวณ "ณ วันนี้" อ้างจากสูงสุด 22 แท่งล่าสุด
+        # ถ้าหุ้นเพิ่งย่อจากยอด ค่านี้จะอยู่เหนือราคาได้ทั้งที่คุณยังกำไร
+        # → ห้ามเขียนว่า "หลุด stop ของคุณ" เพราะ stop จริงขึ้นกับวันที่คุณเข้า
+        return {"action": "⛔ ต่ำกว่าระดับ trail อ้างอิงวันนี้",
+                "เหตุผล": f"ราคา {price:.2f} < trail อ้างอิง {stop:.2f} "
+                          "(ย่อจากยอด 22 แท่งเกิน 3×ATR) — "
+                          "**ไม่ได้แปลว่าหลุด stop ตามแผนของคุณ** "
+                          "stop จริงขึ้นกับวันที่คุณเข้าและระดับที่ trail ไต่ขึ้นมา",
+                "ที่มา": "Chandelier v5.13 (ค่าวันนี้ ไม่ใช่ค่าจากวันที่คุณซื้อ)"}
     if regime == "DOWN":
         return {"action": "🔻 ระบบไม่สนับสนุนให้ถือ",
                 "เหตุผล": "regime ขาลง — กติกา v5.13 ไม่เข้าฝั่ง long ในสภาวะนี้",
