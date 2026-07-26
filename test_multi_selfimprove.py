@@ -210,7 +210,7 @@ import types as _types
 
 _fns = {n.name: n for n in _tree.body if isinstance(n, _ast.FunctionDef)}
 check("app_has_inline_pool_lookup", "_pool_lookup" in _fns)
-check("app_has_version_guard", "_stale_modules" in _fns)
+check("app_has_module_report", "_module_report" in _fns)
 _ns = _types.ModuleType("_probe").__dict__
 if "_pool_lookup" in _fns:
     exec(compile(_ast.Module(body=[_fns["_pool_lookup"]], type_ignores=[]),
@@ -226,39 +226,44 @@ if "_pool_lookup" in _fns:
     check("app_lookup_empty_frame_none", _lk(_pool, "E") is None)
     check("app_lookup_blank_inputs",
           _lk({}, "PTT") is None and _lk(_pool, "") is None)
-for _m, _al in [("portfolio", "PF"), ("gold_council", "GC"),
-                ("multi_meeting", "MM"), ("llm_providers", "LP"),
-                ("quant_evaluation", "QE")]:
-    check(f"mod_{_m}_has_version",
-          bool(getattr(__import__(_m), "VERSION", "")))
-_mmin = None
-for _n in _tree.body:
-    if isinstance(_n, _ast.Assign) and getattr(_n.targets[0], "id", "") == "MODULE_MIN":
-        _mmin = _ast.literal_eval(_n.value)
-check("app_module_min_declared", isinstance(_mmin, dict) and len(_mmin) >= 5)
-check("app_module_min_matches_actual",
-      all(str(getattr(__import__(m), "VERSION", "")) == want
-          for m, (_a, want) in (_mmin or {}).items()))
+for _m in ["pf_holdings", "gold_council", "multi_meeting",
+           "llm_providers", "quant_evaluation"]:
+    check(f"mod_{_m}_has_version", bool(getattr(__import__(_m), "VERSION", "")))
+check("app_imports_pf_holdings", "import pf_holdings as PF" in _src)
+check("app_no_stale_portfolio_import", "import portfolio as PF" not in _src)
 
-# guard ต้องเช็คเฉพาะโมดูลที่หน้านั้นใช้ — ไม่บล็อกเพราะไฟล์ที่ไม่เกี่ยวข้อง
-if "_stale_modules" in _fns and _mmin:
-    _ns["MODULE_MIN"] = _mmin
-    exec(compile(_ast.Module(body=[_fns["_stale_modules"]], type_ignores=[]),
+_needs = None
+for _n in _tree.body:
+    if isinstance(_n, _ast.Assign) and getattr(_n.targets[0], "id", "") == "MODULE_NEEDS":
+        _needs = _ast.literal_eval(_n.value)
+check("app_module_needs_declared", isinstance(_needs, dict) and len(_needs) >= 5)
+check("app_needs_list_real_attrs",
+      all(all(hasattr(__import__(m), a) for a in needs)
+          for m, (_al, needs) in (_needs or {}).items()))
+
+if "_module_report" in _fns and _needs:
+    _ns["MODULE_NEEDS"] = _needs
+    exec(compile(_ast.Module(body=[_fns["_module_report"]], type_ignores=[]),
                  "app", "exec"), _ns)
-    class _Old:
-        VERSION = "0.0"
-    _ns.update(PF=__import__("portfolio"), GC=__import__("gold_council"),
-               MM=__import__("multi_meeting"), LP=_Old,
+    _ns.update(PF=__import__("pf_holdings"), GC=__import__("gold_council"),
+               MM=__import__("multi_meeting"), LP=__import__("llm_providers"),
                QE=__import__("quant_evaluation"))
-    check("app_guard_ignores_irrelevant_module",
-          _ns["_stale_modules"](only=["portfolio"]) == [])
-    check("app_guard_catches_relevant_module",
-          len(_ns["_stale_modules"](only=["llm_providers"])) == 1)
-    check("app_guard_full_scan_still_works",
-          len(_ns["_stale_modules"]()) == 1)
+    check("app_report_all_ok_when_current",
+          all(r["ok"] for r in _ns["_module_report"]()))
+    check("app_report_shows_path",
+          all(r["path"].endswith(".py") for r in _ns["_module_report"]()))
+
+    class _Old:  # จำลองไฟล์เก่าที่ขาดฟังก์ชัน
+        VERSION = "1.0"
+    _ns["PF"] = _Old
+    _r = _ns["_module_report"](only=["pf_holdings"])
+    check("app_report_detects_missing_attrs",
+          len(_r) == 1 and not _r[0]["ok"] and "pick_frame" in _r[0]["ขาด"])
+    check("app_report_scoped_ignores_others",
+          all(r["ok"] for r in _ns["_module_report"](only=["gold_council"])))
     _ns["PF"] = None
-    check("app_guard_reports_import_failure",
-          "import ไม่ได้" in _ns["_stale_modules"](only=["portfolio"])[0])
+    check("app_report_import_failure",
+          _ns["_module_report"](only=["pf_holdings"])[0]["ขาด"] == ["import ไม่ได้"])
 
 print(f"\n{PASS} ผ่าน / {FAIL} ตก  (รวม {PASS + FAIL})")
 if FAILED:

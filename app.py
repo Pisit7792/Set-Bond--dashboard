@@ -48,7 +48,7 @@ import multi_meeting as MM
 import llm_providers as LP
 import quant_evaluation as QE
 import gold_council as GC
-import portfolio as PF
+import pf_holdings as PF
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -2723,28 +2723,42 @@ def _pool_lookup(pool: dict, ticker: str):
     return None
 
 
-MODULE_MIN = {"portfolio": ("PF", "1.2"), "gold_council": ("GC", "v1.0"),
-              "multi_meeting": ("MM", "v1.0"), "llm_providers": ("LP", "1.0"),
-              "quant_evaluation": ("QE", "1.0")}
+# เช็ค "ความสามารถ" ไม่ใช่เลขเวอร์ชัน — บอกได้ตรง ๆ ว่าไฟล์เก่าขาดอะไร
+MODULE_NEEDS = {
+    "pf_holdings": ("PF", ["VERSION", "COLUMNS", "DROPPED_COLS", "pick_frame",
+                           "normalize", "enrich", "summary", "action_for",
+                           "dividend_view", "average_down_plan",
+                           "chandelier_stop", "to_csv", "from_csv"]),
+    "gold_council": ("GC", ["VERSION", "SPECIALISTS", "risk_gate",
+                            "chief_verdict", "parse_council", "tally"]),
+    "multi_meeting": ("MM", ["VERSION", "build_solo_prompt", "collect",
+                             "agreement_rows", "headline"]),
+    "llm_providers": ("LP", ["VERSION", "PROVIDERS", "chat", "ORDER"]),
+    "quant_evaluation": ("QE", ["VERSION", "gate_verdict", "cscv_pbo",
+                                "walk_forward_splits"]),
+}
 
 
-def _stale_modules(only: list[str] | None = None) -> list[str]:
-    """เทียบเวอร์ชันโมดูลกับที่ app.py ต้องการ — กันเคสอัปโหลดไม่ครบ
-    (เจอมาแล้ว: app.py ใหม่ + portfolio.py เก่า = AttributeError อ่านไม่รู้เรื่อง)
+def _module_report(only: list[str] | None = None) -> list[dict]:
+    """คืนสถานะโมดูลที่หน้านั้นใช้จริง พร้อม path ที่ python โหลดมาจริง
 
-    only = รายชื่อโมดูลที่ "หน้านั้นใช้จริง" — ไม่บล็อกเพราะไฟล์ที่ไม่เกี่ยวข้อง
+    ใช้ 'มีฟังก์ชัน/ตัวแปรที่ต้องใช้ครบไหม' แทนการเทียบเลขเวอร์ชัน
+    เพราะเลขเวอร์ชันบอกได้แค่ว่าไม่ตรง ไม่ได้บอกว่าขาดอะไร
     """
-    out = []
-    for mod, (alias, want) in MODULE_MIN.items():
+    rows = []
+    for mod, (alias, needs) in MODULE_NEEDS.items():
         if only is not None and mod not in only:
             continue
         obj = globals().get(alias)
         if obj is None:
-            out.append(f"{mod}.py (import ไม่ได้)")
-        elif str(getattr(obj, "VERSION", "")) != want:
-            out.append(f"{mod}.py (ต้องการ {want} · พบ "
-                       f"{getattr(obj, 'VERSION', 'ไม่มี VERSION')})")
-    return out
+            rows.append({"ไฟล์": f"{mod}.py", "ok": False,
+                         "ขาด": ["import ไม่ได้"], "path": "—", "ver": "—"})
+            continue
+        miss = [a for a in needs if not hasattr(obj, a)]
+        rows.append({"ไฟล์": f"{mod}.py", "ok": not miss, "ขาด": miss,
+                     "path": getattr(obj, "__file__", "—"),
+                     "ver": str(getattr(obj, "VERSION", "ไม่มี"))})
+    return rows
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -2792,11 +2806,25 @@ def _pf_engine_maps(held: list[str]):
 
 
 def page_portfolio():
-    _stale = _stale_modules(only=["portfolio"])
-    if _stale:
-        st.error("**ไฟล์บน repo ไม่ตรงกับ app.py — อัปโหลดไฟล์เหล่านี้ทับแล้ว "
-                 "Reboot:** " + " · ".join(_stale))
+    _rep = _module_report(only=["pf_holdings"])
+    if any(not r["ok"] for r in _rep):
+        bad = [r for r in _rep if not r["ok"]]
+        st.error("**ไฟล์ `pf_holdings.py` บน repo ยังไม่ใช่ตัวใหม่** — "
+                 "อัปโหลดไฟล์นี้ขึ้น repo แล้ว Reboot")
+        for r in bad:
+            st.write(f"- `{r['ไฟล์']}` · เวอร์ชันที่พบ: **{r['ver']}** · "
+                     f"ขาด: {', '.join(r['ขาด'][:6])}")
+            st.caption(f"python โหลดมาจาก: `{r['path']}`")
+        st.info("ถ้าอัปแล้วยังขึ้นข้อความนี้ ให้ดู path ด้านบน — ถ้าไม่ใช่โฟลเดอร์ "
+                "repo ของคุณ แปลว่ามีไฟล์ชื่อซ้ำบังอยู่ · และลองลบโฟลเดอร์ "
+                "`__pycache__` บน repo ออกด้วย")
         return
+    with st.expander("ตรวจไฟล์โมดูล (ถ้าสงสัยว่าอัปไม่ขึ้น)"):
+        st.dataframe(pd.DataFrame([
+            {"ไฟล์": r["ไฟล์"], "เวอร์ชัน": r["ver"],
+             "สถานะ": "✅ ครบ" if r["ok"] else "❌ ขาด " + ", ".join(r["ขาด"]),
+             "โหลดจาก": r["path"]} for r in _module_report()]),
+            use_container_width=True, hide_index=True)
     st.warning("**อ่านก่อนใช้ 3 ข้อ:** (1) หน้านี้ **ไม่มีช่อง 'ราคาขายทำกำไร'** "
                "เพราะ v5.13 ออกด้วย trailing stop ไม่มี TP ตายตัว — ถ้าเติมเป้าราคา "
                "ผล backtest ทั้งหมดใช้อ้างอิงไม่ได้ (2) เครื่องคิดเลข 'ซื้อเฉลี่ย' "
