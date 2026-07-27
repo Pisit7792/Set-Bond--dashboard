@@ -35,6 +35,7 @@ import pandas as pd
 
 import engine as E
 import gold as G
+import accum as ACC
 from profile_data import PROFILE
 from set_context import zsc
 
@@ -170,46 +171,23 @@ def compute_frame(df: pd.DataFrame, bench_close=None, ticker: str = "",
 
     # --- v5.13: SQUEEZE PRECONDITION (TTM: BB20 ใน KC20) — ต้นฉบับปิด default
     #     ตั้งแต่ v5.8 ("edge decayed post-2001", Fang-Jacobsen-Qin JPM 2017)
-    bb_basis = c.rolling(20).mean()
-    bb_dev = 2.0 * c.rolling(20).std(ddof=0)      # Pine ta.stdev = population
-    kc_mid = c.ewm(span=20, adjust=False).mean()
-    kc_rng = 1.5 * G.atr_wilder(fr, 20)
-    fr["squeeze_on"] = ((bb_basis + bb_dev < kc_mid + kc_rng)
-                        & (bb_basis - bb_dev > kc_mid - kc_rng)).fillna(False)
-    _pos = np.arange(len(fr), dtype=float)
-    _last_sq = pd.Series(np.where(fr["squeeze_on"].to_numpy(), _pos, np.nan),
-                         index=fr.index).ffill()
-    fr["bars_sq"] = _pos - _last_sq               # NaN = ยังไม่เคยเกิด squeeze
+    #     v14: ย้ายสูตรไป accum.py เพื่อให้หุ้นไทยกับทองคำใช้ "นิยามเดียวกัน"
+    _sq = ACC.squeeze_frame(fr)
+    fr["squeeze_on"] = _sq["squeeze_on"]
+    fr["bars_sq"] = _sq["bars_sq"]                # NaN = ยังไม่เคยเกิด squeeze
     fr["primed"] = (pd.Series(True, index=fr.index) if not p.use_sqz
                     else (fr["bars_sq"] <= p.sq_win).fillna(False))
 
     # --- v5.13: ACCUMULATION-FOOTPRINT WATCH — ต้นฉบับติดป้าย DISPLAY ONLY
     #     grade C proxy ("NEVER enters, exits, sizes or gates") — ที่นี่เช่นกัน
-    up_vol = v.where(c > c.shift(1), 0.0).rolling(p.acc_len).sum()
-    dn_vol = v.where(c < c.shift(1), 0.0).rolling(p.acc_len).sum()
-    rng_hl = h - l
-    clv_raw = pd.Series(np.where(rng_hl > 0, ((c - l) - (h - c)) / rng_hl, 0.0),
-                        index=fr.index)
-    clv_avg = clv_raw.rolling(p.acc_len).mean()
-    vol_act = v.rolling(p.acc_len).mean() / v.rolling(100).mean().clip(lower=1.0)
-    rng_hi_a = h.rolling(p.acc_len).max()
-    rng_lo_a = l.rolling(p.acc_len).min()
-    fr["pos_in_rng"] = pd.Series(
-        np.where(rng_hi_a > rng_lo_a, (c - rng_lo_a) / (rng_hi_a - rng_lo_a), 0.5),
-        index=fr.index)
-    fr["acc_flat_ok"] = ((c - c.shift(p.acc_len)).abs()
-                         <= p.acc_flat * atrv).fillna(False)
-    fr["acc_press_ok"] = ((dn_vol > 0)
-                          & (up_vol >= p.acc_ratio * dn_vol)).fillna(False)
-    fr["acc_clv_ok"] = (clv_avg >= 0.10).fillna(False)
-    fr["acc_act_ok"] = (vol_act >= 0.7).fillna(False)
-    fr["acc_votes"] = (fr["acc_flat_ok"].astype(int)
-                       + fr["acc_press_ok"].astype(int)
-                       + fr["acc_clv_ok"].astype(int)
-                       + fr["acc_act_ok"].astype(int))
-    acc_ctx = ((c < swing_hi) & (fr["pos_in_rng"] <= 0.65)).fillna(False)
-    fr["acc_hot"] = bool(p.use_acc) & acc_ctx & (fr["acc_votes"] >= 3)
-    fr["acc_show"] = fr["acc_hot"] & fr["acc_hot"].shift(1).fillna(False)
+    _acc = ACC.accumulation_frame(fr, atrv, swing_hi, acc_len=p.acc_len,
+                                  acc_flat=p.acc_flat, acc_ratio=p.acc_ratio,
+                                  use_acc=p.use_acc)
+    for _k in ["pos_in_rng", "acc_flat_ok", "acc_press_ok", "acc_clv_ok",
+               "acc_act_ok", "acc_votes", "acc_ctx", "acc_hot", "acc_show",
+               "_net_move_atr", "_updn_ratio", "_clv_avg", "_vol_act",
+               "vol_quality"]:
+        fr[_k] = _acc[_k]
 
     er_num = (c - c.shift(p.er_len)).abs()
     er_den = c.diff().abs().rolling(p.er_len).sum()
@@ -703,54 +681,56 @@ def rank_universe(prices: dict, bench_close, p: SwingParams = None,
 # v5.13: สแกน Accumulation + Squeeze ทั้ง universe (รายการเฝ้าดู — ไม่ใช่สัญญาณซื้อ)
 # ---------------------------------------------------------------------------
 ACC_SQ_BUCKETS = ["🟣 สะสม + สควีซพร้อมกัน", "🔵 สควีซอยู่ (บีบตัว)",
-                  "🟡 สะสม (footprint)", "🟠 เพิ่งคลายสควีซ (≤6 แท่ง)"]
+                  "🟡 สะสม (footprint)",
+                  "⚪ สะสมแท่งแรก (ยังไม่ครบ 2 แท่ง)",
+                  "🟠 เพิ่งคลายสควีซ (≤6 แท่ง)"]
+
+# สถานะที่ "มีเครื่องหมายจริงบนชาร์ต Pine v5.13" มีแค่ 3 อันแรก
+BUCKETS_WITH_PINE_MARKER = set(ACC_SQ_BUCKETS[:3])
 
 
-def scan_acc_squeeze(prices: dict, bench_close,
-                     p: SwingParams = None) -> pd.DataFrame:
+def scan_acc_squeeze(prices: dict, bench_close, p: SwingParams = None,
+                     closed_only: bool = False,
+                     last_closed_date=None) -> pd.DataFrame:
     """สถานะสะสม/สควีซ ณ แท่งล่าสุดของทุกตัวใน universe.
 
     ความซื่อสัตย์ (คำของต้นฉบับเอง): accumulation watch = DISPLAY ONLY,
     grade C proxy, "NEVER enters, exits, sizes or gates" และ squeeze edge
     "decayed post-2001" (เหตุที่ต้นฉบับปิด useSqz ตั้งแต่ v5.8) —
-    ตารางนี้คือคิวเฝ้าดู ไม่ใช่สัญญาณซื้อ และไม่เข้าเงื่อนไขเทรดใด ๆ"""
+    ตารางนี้คือคิวเฝ้าดู ไม่ใช่สัญญาณซื้อ และไม่เข้าเงื่อนไขเทรดใด ๆ
+
+    closed_only=True  -> ตัดแท่งสุดท้ายที่ยังวิ่งไม่จบวันออกก่อนคำนวณ
+                          (โหมดเทียบกับชาร์ต TradingView ตอนตลาดปิดแล้ว)
+    last_closed_date  -> ถ้าให้มา จะตัดทุกแท่งที่ใหม่กว่าวันดังกล่าวทิ้ง
+    """
     p = p or SwingParams()
     rows = []
     for tk, df in prices.items():
         try:
-            if len(df) < 260:
+            d = df
+            if last_closed_date is not None:
+                d = d[d.index <= pd.Timestamp(last_closed_date)]
+            elif closed_only and len(d) > 1:
+                d = d.iloc[:-1]
+            if len(d) < 260:
                 continue
-            fr = compute_frame(df, bench_close, tk, p)
+            fr = compute_frame(d, bench_close, tk, p)
             r = fr.iloc[-1]
             sq_on = bool(r["squeeze_on"])
             b_sq = r["bars_sq"]
-            recent_sq = (b_sq == b_sq) and (0 < b_sq <= 6)
             acc = bool(r["acc_show"])
-            if not (sq_on or acc or recent_sq):
+            hot = bool(r["acc_hot"])
+            bucket, on_chart = ACC.status_label(acc, hot, sq_on, b_sq, p.sq_win)
+            if bucket == "—":
                 continue
-            if acc and sq_on:
-                bucket = ACC_SQ_BUCKETS[0]
-            elif sq_on:
-                bucket = ACC_SQ_BUCKETS[1]
-            elif acc:
-                bucket = ACC_SQ_BUCKETS[2]
-            else:
-                bucket = ACC_SQ_BUCKETS[3]
-            votes = []
-            if r["acc_flat_ok"]:
-                votes.append("ราคานิ่ง")
-            if r["acc_press_ok"]:
-                votes.append("วอลุ่มขาซื้อเด่น")
-            if r["acc_clv_ok"]:
-                votes.append("ปิดค่อนบน")
-            if r["acc_act_ok"]:
-                votes.append("ตลาดไม่ตาย")
+            votes = [n for n, k in zip(ACC.VOTE_NAMES, ACC.VOTE_KEYS) if r[k]]
             reg = "UP" if r["regime_up"] else ("DOWN" if r["regime_dn"] else "FLAT")
             atr_ok = r["atr"] == r["atr"] and r["atr"] > 0
             dist = (r["swing_hi"] - r["Close"]) / r["atr"] if atr_ok \
                 else float("nan")
             rows.append({
                 "หุ้น": tk.replace(".BK", ""), "สถานะ": bucket,
+                "มีเครื่องหมายบนชาร์ต": "ใช่" if on_chart else "ไม่ (ของหน้านี้เอง)",
                 "โหวตสะสม": f"{int(r['acc_votes'])}/4",
                 "องค์ประกอบที่ผ่าน": " + ".join(votes) if votes else "—",
                 "สควีซ": ("ON" if sq_on else
@@ -764,6 +744,7 @@ def scan_acc_squeeze(prices: dict, bench_close,
                 "ราคา": round(float(r["Close"]), 2),
                 "ADV20 (ลบ.)": round(float(r["liq_val"]) / 1e6, 1)
                 if r["liq_val"] == r["liq_val"] else None,
+                "แท่งล่าสุดที่ใช้": str(pd.Timestamp(fr.index[-1]).date()),
             })
         except Exception:
             continue
@@ -771,7 +752,32 @@ def scan_acc_squeeze(prices: dict, bench_close,
     if out.empty:
         return out
     order = {b: i for i, b in enumerate(ACC_SQ_BUCKETS)}
-    out["_o"] = out["สถานะ"].map(order)
+    out["_o"] = out["สถานะ"].map(order).fillna(99)
     out = out.sort_values(["_o", "ConfL"], ascending=[True, False]) \
              .drop(columns="_o").reset_index(drop=True)
     return out
+
+
+def acc_audit(df: pd.DataFrame, bench_close=None, ticker: str = "",
+              p: SwingParams = None, closed_only: bool = False) -> dict:
+    """ตารางตรวจสอบทีละข้อของหุ้น 1 ตัว — ไว้ทาบกับ dashboard บน TradingView.
+
+    ต้นฉบับ Pine แสดงแถว "Accum / conf" เป็น  (WATCH ถ้า accShow) + votes + "/4"
+    ที่นี่แตกออกให้เห็น 'ค่าที่วัดได้' ทุกข้อ เพื่อให้ชี้ได้ว่าข้อไหนไม่ตรงกัน
+    """
+    p = p or SwingParams()
+    d = df.iloc[:-1] if (closed_only and len(df) > 1) else df
+    fr = compute_frame(d, bench_close, ticker, p)
+    r = fr.iloc[-1]
+    return {
+        "ticker": ticker.replace(".BK", ""),
+        "bar_date": str(pd.Timestamp(fr.index[-1]).date()),
+        "rows": ACC.audit_rows(fr, -1, p.acc_len, p.acc_flat, p.acc_ratio),
+        "votes": int(r["acc_votes"]),
+        "acc_hot": bool(r["acc_hot"]),
+        "acc_show": bool(r["acc_show"]),
+        "squeeze_on": bool(r["squeeze_on"]),
+        "bars_sq": (None if r["bars_sq"] != r["bars_sq"] else int(r["bars_sq"])),
+        "pine_dash": ("WATCH " if bool(r["acc_show"]) else "")
+                     + f"{int(r['acc_votes'])}/4",
+    }

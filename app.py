@@ -49,6 +49,8 @@ import llm_providers as LP
 import quant_evaluation as QE
 import gold_council as GC
 import pf_holdings as PF
+import accum as ACC
+import datastamp as DS
 
 st.set_page_config(page_title="SET × Bond Crisis", page_icon="🛡️", layout="wide")
 
@@ -184,6 +186,39 @@ def C_crypto(sym: str):
 # ---------------------------------------------------------------------------
 # โหลด + คำนวณฝั่ง SET (ทำงานเสมอ — ต้องมีอินเทอร์เน็ต)
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# v14 — ตราเวลาข้อมูล (ใช้ทุกแท็บ): บอกว่าที่เห็นบนจอสดแค่ไหน
+# ---------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def C_stamp(tag: str, key: str) -> str:
+    """เวลาที่ cache ของชุดข้อมูล (tag,key) ถูกสร้าง — TTL เท่ากับตัวข้อมูล
+
+    ข้อจำกัดที่ไม่ปิดบัง: เป็น 'เวลาที่ cache ถูกสร้าง' ไม่ใช่เวลาที่ yfinance
+    ตอบกลับเป๊ะ ๆ และถ้า cache สองชุดถูกล้างไม่พร้อมกันตัวเลขอาจคลาดได้
+    ตัวที่เชื่อได้แน่นอนคือ 'แท่งล่าสุด' ซึ่งอ่านจากตัวข้อมูลเอง
+    """
+    return DS.now_th().isoformat()
+
+
+DS_ITEMS: list = []
+
+
+def stamp_add(name: str, data, market: str = "SET", tag: str = "",
+              key: str = "", ttl: int = 3600, note: str = ""):
+    """ลงทะเบียนชุดข้อมูลของหน้านี้ เพื่อไปโผล่ในแถบ 'ความสดของข้อมูล'"""
+    from datetime import datetime as _dt
+    loaded = None
+    if tag:
+        try:
+            loaded = _dt.fromisoformat(C_stamp(tag, key))
+        except Exception:
+            loaded = None
+    it = DS.describe(name, data, market, loaded, ttl, note)
+    DS_ITEMS.append(it)
+    return it
+
+
 tickers = tuple(SE.to_yahoo(uni_text.splitlines()))
 bench_sym, bench_label, bench_df = C_set_bench(set_period)
 set_prices, set_failed = C_set_prices(tickers, set_period)
@@ -198,6 +233,14 @@ bench_close = bench_df["Close"].dropna()
 if isinstance(bench_close, pd.DataFrame):
     bench_close = bench_close.iloc[:, 0]
 set_regime = SE.regime_series(bench_close)
+
+stamp_add(f"ราคาหุ้นไทย ({len(set_prices)} ตัว)", set_prices, "SET",
+          "set_prices", f"{tickers}|{set_period}", 3600,
+          "yfinance สิ้นวัน · auto_adjust=True (ปรับปันผล/แตกพาร์ย้อนหลัง)")
+stamp_add(f"ดัชนีอ้างอิง {bench_label}", bench_df, "SET",
+          "set_bench", str(set_period), 3600, f"สัญลักษณ์ {bench_sym}")
+LAST_SET_BAR = DS.last_index(bench_close)
+SET_BAR_CLOSED = DS.bar_is_closed(LAST_SET_BAR, "SET")
 thb_close = thb["Close"].dropna() if ("Close" in thb.columns and len(thb)) \
     else pd.Series(dtype=float)
 if isinstance(thb_close, pd.DataFrame):
@@ -227,6 +270,18 @@ if g_on:
                        "MOVE fallback เป็น VIX")
     else:
         g_on = False  # เลือก Live แต่ยังไม่ใส่ key → ฝั่ง Global ยังไม่ทำงาน
+
+if g_on:
+    if is_demo:
+        stamp_add("Global (DEMO สังเคราะห์)", g_prices, "NONE", "", "", 0,
+                  "⚠️ ตัวเลขสมมติทั้งหมด ไม่ใช่ข้อมูลตลาดจริง — ห้ามใช้ตัดสินใจ")
+    else:
+        stamp_add("มหภาค FRED", {k: v for k, v in fred.items()
+                                 if isinstance(v, pd.Series)}, "NONE",
+                  "fred", "live", 3600,
+                  "FRED เผยแพร่ล่าช้าตามรอบของแต่ละ series (บางตัวรายเดือน)")
+        stamp_add("ราคาสินทรัพย์โลก", g_prices, "US", "gprices", "live", 3600,
+                  "yfinance สิ้นวัน — เวลาปิดตลาดสหรัฐฯ ตรงกับ ~03:00-04:00 น. ไทย")
 
 
 def S(sid: str) -> pd.Series:
@@ -1293,8 +1348,23 @@ def page_set_flow():
     for i in issues:
         st.caption("ℹ️ " + i)
     last = fdf.index[-1]
+    _mt = None
+    try:
+        from datetime import datetime as _dt
+        _mt = _dt.fromtimestamp(os.path.getmtime(FLOW_PATH))
+    except Exception:
+        _mt = None
+    DS_ITEMS.append(DS.describe("Fund Flow (Set_update.csv)", fdf, "SET",
+                                _mt, 0,
+                                "ไฟล์ในเครื่อง — ไม่ได้ดึงอัตโนมัติ ต้องเติมข้อมูลเอง"))
     st.caption(f"ข้อมูล {len(fdf)} วันทำการ: {fdf.index[0]:%d/%m/%Y} → "
-               f"**{last:%d/%m/%Y}** (สุทธิ หน่วยล้านบาท)")
+               f"**{last:%d/%m/%Y}** (สุทธิ หน่วยล้านบาท) · "
+               f"ไฟล์ถูกแก้ล่าสุด {DS.fmt(_mt)}")
+    _fl_age = DS.staleness(last, "SET")
+    if _fl_age != "ok":
+        st.warning(f"⚠️ ข้อมูล flow ล่าสุดคือ {last:%d/%m/%Y} ({DS.age_text(last)}) "
+                   "— ยังไม่ได้เติมข้อมูลวันล่าสุดหรือเปล่า? ตัวเลขบนหน้านี้"
+                   "สะท้อนแค่ถึงวันนั้น")
 
     st.dataframe(FL.flow_summary(fdf), hide_index=True)
     cc = FL.same_day_corr(fdf)
@@ -1462,6 +1532,11 @@ def page_gold():
                      swap_short_oz=swap_s, use_carry=use_carry,
                      use_er_gate=use_er, use_htf_w=use_w, use_y10=use_y10)
     xau, dxy, jpy, vix = C_gold_bundle(gsym, g_period, use_carry)
+    stamp_add(f"ราคาทองคำ ({gsym})", xau,
+              "24H" if gsym == "PAXG-USD" else "COMEX",
+              "gold", f"{gsym}|{g_period}|{use_carry}", 3600,
+              "PAXG = โทเคนอิงทอง เดิน 7 วัน/สัปดาห์ · GC=F = ฟิวเจอร์ส "
+              "COMEX ซีรีส์ต่อเนื่อง (มี roll)")
     if xau.empty or len(xau) < 320:
         st.error(f"ดึงราคาทอง ({gsym}) ไม่ได้/สั้นเกิน — ลองสลับแหล่งข้อมูลหรือตรวจเน็ต")
         return
@@ -1524,6 +1599,103 @@ def page_gold():
     if not seven_g:
         figg.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
     plot(figg)
+
+    # ------------------------------------------------------------------
+    # v14: จุดสะสม / จุดสควีซ บนทองคำ (นิยามยกมาจาก SET Swing v5.13)
+    # ------------------------------------------------------------------
+    st.divider()
+    st.markdown("#### 🟡 จุดสะสม / 🔵 จุดสควีซ บนทองคำ")
+    st.error(
+        "**ไม่ใช่ของสคริปต์ทองคำ v6.4** — ต้นฉบับ XAU RTP v6.4 ไม่เคยมีส่วนนี้ "
+        "นี่คือการยกนิยามจาก **SET Swing v5.13 (ฝั่งหุ้น)** มาวางบนข้อมูลทอง "
+        "ตามที่ขอให้เหมือนหน้าหุ้น · สูตรเหมือนกันเป๊ะทุกตัวเลข แต่ "
+        "**ยังไม่เคย validate กับทองคำเลย** และต้นฉบับฝั่งหุ้นให้เกรด C พร้อม"
+        "กำกับว่า \"NEVER enters, exits, sizes or gates\" → ห้ามใช้ตัดสินใจ"
+        "เข้า/ออก/ขนาดไม้ ใช้ได้อย่างเดียวคือเป็นคิวเฝ้าดู")
+    st.warning(
+        "**ปัญหาวอลุ่ม — ข้อจำกัดที่แรงกว่าฝั่งหุ้นมาก:** ทฤษฎีที่รองรับ "
+        "(square-root impact law → ออร์เดอร์ใหญ่ทิ้งรอยเท้าวอลุ่ม) ตั้งอยู่บน"
+        "วอลุ่มของตลาดรวมศูนย์ แต่ทองคำ spot เป็น OTC กระจายทั่วโลก — "
+        f"วอลุ่มที่เห็นเป็นเศษเสี้ยว\n\n**{gsym}**: "
+        + G.GOLD_VOL_NOTE.get(gsym, "") +
+        "\n\nโหวตข้อ 2 (วอลุ่มขาซื้อเด่น) และข้อ 4 (ตลาดไม่ตาย) ใช้วอลุ่ม "
+        "จึงมีสวิตช์ให้ตัดทิ้งได้ ถ้าตัด ระบบจะนับเป็น **x/2 ที่วัดได้** "
+        "แทนการแกล้งทำเป็นว่ามีครบ 4")
+    gv1, gv2 = st.columns([2, 3])
+    use_vv = gv1.checkbox("นับโหวตที่ใช้วอลุ่มด้วย (ข้อ 2 และ 4)", True,
+                          help="ปิด = เชื่อเฉพาะโหวตที่ไม่พึ่งวอลุ่ม "
+                               "(ราคานิ่ง + ปิดค่อนบน) แล้วต้องผ่านทั้ง 2 ข้อ")
+    g_closed = gv2.checkbox("ใช้เฉพาะแท่งที่ปิดแล้ว", True,
+                            help="ตัดแท่งวันปัจจุบันที่ยังวิ่งไม่จบออก "
+                                 "(PAXG เดินทุกวัน แท่ง 'วันนี้' ไม่เคยจบจริง)")
+    gacc = G.acc_squeeze_state(xau, gsym, p, use_volume_votes=use_vv,
+                               closed_only=g_closed)
+    if not gacc.get("ok"):
+        st.info(gacc.get("เหตุผล", "คำนวณไม่ได้"))
+    else:
+        ga = st.columns(4)
+        ga[0].metric("สถานะ", gacc["สถานะ"] if gacc["สถานะ"] != "—"
+                     else "ไม่เข้าเงื่อนไข")
+        ga[1].metric("โหวตสะสม", f"{gacc['โหวต']}/{gacc['เต็ม']}",
+                     f"ต้องการ ≥{gacc['ต้องการ']}", delta_color="off")
+        ga[2].metric("Squeeze", "ON" if gacc["squeeze_on"] else
+                     (f"คลาย {gacc['bars_sq']} แท่ง"
+                      if gacc["bars_sq"] is not None else "ไม่เคยเกิด"))
+        ga[3].metric("ตำแหน่งในกรอบ 20 แท่ง",
+                     f"{gacc['pos_in_rng'] * 100:.0f}%"
+                     if gacc["pos_in_rng"] is not None else "—",
+                     "ต้อง ≤ 65%", delta_color="off")
+        st.caption(f"แท่งที่ใช้คำนวณ: **{gacc['bar_date']}** · "
+                   f"คุณภาพวอลุ่ม (สัดส่วนแท่งที่มีวอลุ่ม > 0 ใน 100 แท่ง): "
+                   f"{gacc['vol_quality'] * 100:.0f}%")
+        if gacc["vol_quality"] < 0.9 and use_vv:
+            st.warning("⚠️ วอลุ่มขาดหายเกิน 10% ของหน้าต่าง — โหวตข้อ 2/4 "
+                       "ไม่น่าเชื่อถือ ควรปิดสวิตช์วอลุ่มด้านบน")
+        gdf = pd.DataFrame(gacc["rows"])
+        gdf["ผ่าน"] = gdf["ผ่าน"].map({True: "✅", False: "❌", None: "—"})
+        st.dataframe(gdf, hide_index=True, use_container_width=True)
+
+        gfr = gacc["frame"]
+        gshow = gfr.tail(260)
+        figa = go.Figure()
+        figa.add_trace(go.Candlestick(x=gshow.index, open=gshow["Open"],
+                                      high=gshow["High"], low=gshow["Low"],
+                                      close=gshow["Close"], name=gsym))
+        sq_pts = gshow[gshow["squeeze_on"]]
+        if len(sq_pts):
+            figa.add_trace(go.Scatter(
+                x=sq_pts.index, y=sq_pts["Low"] * 0.985, mode="markers",
+                name="สควีซ (บีบตัว)",
+                marker=dict(symbol="circle", size=6, color="#2ac7e0")))
+        ac_pts = gshow[gshow["acc_show"]]
+        if len(ac_pts):
+            figa.add_trace(go.Scatter(
+                x=ac_pts.index, y=ac_pts["Low"] * 0.97, mode="markers",
+                name="สะสม (footprint)",
+                marker=dict(symbol="square", size=8, color="#e8c22a")))
+        figa.update_layout(height=380, xaxis_rangeslider_visible=False,
+                           margin=dict(l=10, r=10, t=30, b=10),
+                           legend=dict(orientation="h"))
+        if not seven_g:
+            figa.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+        plot(figa)
+        st.caption(
+            f"260 แท่งล่าสุด: สะสม {int(gshow['acc_show'].sum())} แท่ง · "
+            f"สควีซ {int(gshow['squeeze_on'].sum())} แท่ง — "
+            "**จำนวนที่ขึ้นบ่อยไม่ได้แปลว่าใช้ได้** ยังไม่มีการทดสอบว่าแท่ง"
+            "เหล่านี้ให้ผลตอบแทนต่างจากแท่งอื่น (ทั้งบนทองและบนหุ้น)")
+        with st.expander("ทำไมไม่เอาไปใช้เข้าออร์เดอร์"):
+            st.markdown(
+                "- ต้นฉบับ v5.13 เขียนกำกับไว้เองว่า accumulation watch "
+                "**\"NEVER enters, exits, sizes or gates\"** — เกรด C\n"
+                "- ต้นฉบับยังระบุเองว่าเครื่องมือสาย OBV/AD หลักฐาน "
+                "weak/mixed, Wyckoff เป็น anecdotal และออร์เดอร์ VWAP/POV "
+                "ที่ทำดี ๆ **ตรวจไม่เจอ**\n"
+                "- ฝั่งสควีซ: ต้นฉบับปิด `useSqz` เป็นค่าตั้งต้นตั้งแต่ v5.8 "
+                "เพราะ edge หดเหลือ ~1 ใน 14 ตลาดดัชนีหลังปี 2001 "
+                "(Fang-Jacobsen-Qin, JPM 2017)\n"
+                "- บนทองคำเพิ่มอีกชั้น: วอลุ่มเป็น proxy ของ proxy และไม่มี"
+                "การทดสอบใด ๆ รองรับ")
 
     st.markdown("#### Backtest (สัญญาณปิดแท่ง → เข้า open แท่งถัดไป, "
                 "หัก spread ทุกเทรด, แยกบัญชี swap"
@@ -1735,6 +1907,8 @@ def page_crypto():
     coin = st.selectbox("เหรียญ", ["BTC-USD", "ETH-USD", "SOL-USD"], 0)
     is_btc = coin == "BTC-USD"
     d = C_crypto(coin)
+    stamp_add(f"ราคาคริปโต ({coin})", d, "24H", "crypto", str(coin),
+              3600, "เดิน 24/7 — แท่งของวันปัจจุบันไม่เคยปิดจริง")
     if d.empty or len(d) < 380:
         st.error("ดึงราคาไม่ได้/ประวัติสั้นเกิน — ลองใหม่")
         return
@@ -1871,8 +2045,9 @@ def page_overall():
 # ===========================================================================
 
 @st.cache_data(ttl=3600, show_spinner="สแกน Accumulation + Squeeze ทั้ง SET100...")
-def C_accsq(period: str, tickers_key: tuple, bench_key: str):
-    return SW.scan_acc_squeeze(set_prices, bench_close)
+def C_accsq(period: str, tickers_key: tuple, bench_key: str,
+            closed_only: bool = False):
+    return SW.scan_acc_squeeze(set_prices, bench_close, closed_only=closed_only)
 
 
 def page_set_accsq():
@@ -1881,19 +2056,82 @@ def page_set_accsq():
                "(\"NEVER enters, exits, sizes or gates\") และ squeeze edge "
                "*decayed post-2001* (เหตุที่ต้นฉบับปิด useSqz ตั้งแต่ v5.8) — "
                "ใช้จัดคิวทำการบ้าน แล้วรอเงื่อนไขเต็มของกติกา")
+
+    live_bar = (SET_BAR_CLOSED is False)
+    cA, cB = st.columns([2, 3])
+    closed_only = cA.checkbox("ใช้เฉพาะแท่งที่ปิดแล้ว (โหมดเทียบ TradingView)",
+                              value=live_bar,
+                              help="ตัดแท่งวันปัจจุบันที่ยังวิ่งไม่จบออกก่อนคำนวณ "
+                                   "— ค่าจะตรงกับชาร์ตตอนสิ้นวันมากขึ้น")
+    if live_bar and not closed_only:
+        cB.warning("⚠️ แท่งวันนี้ยังไม่ปิด — ตัวเลขจะขยับไปเรื่อยจนตลาดปิด "
+                   "และจะไม่ตรงกับชาร์ต")
+
     tbl = C_accsq(set_period, tuple(sorted(set_prices)),
-                  str(bench_close.index[-1].date()))
+                  str(bench_close.index[-1].date()), closed_only)
     if tbl.empty:
         st.info("วันนี้ไม่มีตัวที่เข้าเงื่อนไขสะสม/สควีซ (หรือข้อมูลไม่พอ)")
         return
+
+    st.error(
+        "**อ่านก่อนเทียบกับชาร์ต — จุดที่เคยทำให้ 'ดูไม่ตรง':**\n\n"
+        "1. Pine v5.13 พิมพ์เครื่องหมายบนชาร์ตแค่ **2 อย่าง** คือ "
+        "สี่เหลี่ยมเหลือง (`accShow`) และวงกลมฟ้า (`squeezeOn`) — สถานะ "
+        "**⚪ สะสมแท่งแรก** และ **🟠 เพิ่งคลายสควีซ** เป็นของหน้าจอนี้เอง "
+        "**ไม่มีอะไรให้ทาบบนชาร์ต** (ดูคอลัมน์ 'มีเครื่องหมายบนชาร์ต')\n"
+        "2. หุ้นที่โหวต 3-4/4 **วันนี้วันแรก** จะยังไม่ขึ้นสี่เหลี่ยมเหลือง เพราะ "
+        "ต้นฉบับบังคับ `accShow = accHot and accHot[1]` (ติดกัน 2 แท่ง) — "
+        "แต่ dashboard บน TradingView โชว์เลขโหวตให้เห็นตั้งแต่แท่งแรก "
+        "จึงดูเหมือนแอปหาย ทั้งที่ตรงตามกติกา\n"
+        "3. ราคาที่ใช้มาจาก **yfinance auto_adjust=True** (ปรับปันผล/แตกพาร์"
+        "ย้อนหลัง) ส่วน TradingView ปรับคนละแบบตามการตั้งค่าของคุณ → "
+        "แท่งรอบวัน XD ให้ผลต่างกันได้")
+
     cnt = tbl["สถานะ"].value_counts()
-    mR = st.columns(4)
+    mR = st.columns(len(SW.ACC_SQ_BUCKETS))
     for _i, _b in enumerate(SW.ACC_SQ_BUCKETS):
         mR[_i].metric(_b.split(" ", 1)[0], int(cnt.get(_b, 0)),
                       _b.split(" ", 1)[1], delta_color="off")
-    fsel = st.selectbox("กรองสถานะ", ["ทั้งหมด"] + SW.ACC_SQ_BUCKETS, 0)
-    shw = tbl if fsel == "ทั้งหมด" else tbl[tbl["สถานะ"] == fsel]
+    n_chart = int((tbl["มีเครื่องหมายบนชาร์ต"] == "ใช่").sum())
+    st.caption(f"ในตารางนี้ **{n_chart} จาก {len(tbl)} ตัว** มีเครื่องหมายจริงบน"
+               f"ชาร์ต Pine · ที่เหลืออีก {len(tbl) - n_chart} ตัวเป็นสถานะที่"
+               "หน้าจอนี้เพิ่มเอง · " + ACC.MARKER_NOTE)
+
+    fsel = st.selectbox("กรองสถานะ", ["ทั้งหมด", "เฉพาะที่มีเครื่องหมายบนชาร์ต"]
+                        + SW.ACC_SQ_BUCKETS, 0)
+    if fsel == "ทั้งหมด":
+        shw = tbl
+    elif fsel.startswith("เฉพาะ"):
+        shw = tbl[tbl["มีเครื่องหมายบนชาร์ต"] == "ใช่"]
+    else:
+        shw = tbl[tbl["สถานะ"] == fsel]
     st.dataframe(shw, hide_index=True, height=380)
+
+    # ---------------- ตรวจสอบทีละข้อ เทียบกับ TradingView ได------------------
+    with st.expander("🔍 ตรวจทีละข้อ — ทาบกับ dashboard บน TradingView"):
+        pick = st.selectbox("หุ้นที่จะตรวจ", list(tbl["หุ้น"]), 0,
+                            key="accsq_audit_pick")
+        key = pick + ".BK"
+        if key in set_prices:
+            aud = SW.acc_audit(set_prices[key], bench_close, key,
+                               closed_only=closed_only)
+            k1, k2, k3 = st.columns(3)
+            k1.metric("แถว Accum/conf ที่ควรเห็นบน TradingView", aud["pine_dash"])
+            k2.metric("แท่งที่ใช้คำนวณ", aud["bar_date"])
+            k3.metric("Squeeze", "ON" if aud["squeeze_on"] else
+                      (f"คลาย {aud['bars_sq']} แท่ง"
+                       if aud["bars_sq"] is not None else "ไม่เคยเกิด"))
+            adf = pd.DataFrame(aud["rows"])
+            adf["ผ่าน"] = adf["ผ่าน"].map({True: "✅", False: "❌", None: "—"})
+            st.dataframe(adf, hide_index=True, use_container_width=True)
+            st.caption(
+                f"ถ้าตัวเลขในคอลัมน์ 'ค่าที่วัดได้' ต่างจาก TradingView อย่างมี"
+                "นัย แปลว่า **ข้อมูลดิบต่างกัน** (Yahoo vs ตลท.) ไม่ใช่สูตรต่างกัน "
+                "— สูตรถูกตรวจแบบไล่ทีละแท่งแล้วว่าตรงกับ Pine v5.13 "
+                "(ดู test_v14.py) · ถ้าตรงกันแต่สถานะไม่ตรง ให้ดูข้อ 1-2 ด้านบน")
+        else:
+            st.caption("ไม่พบราคาของตัวนี้ในชุดที่โหลดมา")
+
     picks = st.multiselect("เลือกส่งเข้าห้องประชุม AI",
                            list(tbl["หุ้น"]), default=list(tbl["หุ้น"][:4]))
     if st.button("🏛️ ส่งชื่อไปหน้า 'AI Meeting หุ้น'"):
@@ -3073,8 +3311,23 @@ ROUTES = {
 }
 
 st.title(page)
+
+# --- v14: แถบเวลาข้อมูลด้านบนทุกหน้า (ชุดที่โหลดร่วมกันทุกแท็บ) ---
+_top = (f"🕒 **{DS.fmt(DS.now_th(), short=True)}** (เวลาไทย) · "
+        f"หุ้นไทยแท่งล่าสุด **{DS_ITEMS[0]['แท่งล่าสุด']}** "
+        f"({DS_ITEMS[0]['อายุ']})")
+if SET_BAR_CLOSED is False:
+    st.warning(_top + " — ⚠️ **แท่งวันนี้ยังไม่ปิด** ค่าที่คำนวณได้ยังเปลี่ยนได้อีก "
+               "และจะไม่ตรงกับชาร์ต TradingView ตอนสิ้นวัน")
+elif DS_ITEMS[0]["ระดับ"] != "ok":
+    st.warning(_top + " — ⚠️ ข้อมูลเก่ากว่าที่ควร ตรวจอินเทอร์เน็ต/กด "
+               "'โหลดข้อมูลใหม่' ที่แถบซ้าย")
+else:
+    st.caption(_top + " · แท่งล่าสุดปิดแล้ว")
+
 ROUTES[page]()
 st.divider()
+DS.render(st, DS_ITEMS)
 st.caption(DISCLAIMER + " | Global: "
            + ("ปิด" if not g_on else ("DEMO ⚠️" if is_demo else "LIVE"))
            + " | SET: LIVE (yfinance, สิ้นวัน)")

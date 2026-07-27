@@ -543,3 +543,101 @@ def validation_verdict(bt: dict) -> tuple:
         return "warn", msg + " — ผ่านเป้าใน backtest แต่เป็น in-sample: " \
                              "ต้อง journal จริงต่อ ห้ามถือเป็นข้อพิสูจน์"
     return "fail", msg + " — ไม่ผ่านเป้าของสคริปต์เอง"
+
+
+# ===========================================================================
+# v14: ACCUMULATION-FOOTPRINT WATCH + SQUEEZE บนทองคำ
+# ===========================================================================
+# ⚠️ เปิดเผยตรง ๆ ก่อนใช้ — สามข้อนี้สำคัญกว่าตัวเลขที่จะได้:
+#
+# 1) **ไม่ได้อยู่ในสคริปต์ XAU RTP v6.4** ผู้เขียนต้นฉบับทองคำไม่เคยใส่ส่วนนี้
+#    นี่คือการ "ยกนิยามจาก SET Swing v5.13 (Pine) มาวางบนข้อมูลทอง" ตามที่ผู้ใช้
+#    ขอให้เหมือนกับหน้าหุ้น — สูตรเหมือนกันเป๊ะ แต่ **ไม่ใช่ของต้นฉบับทอง**
+#
+# 2) **หลักฐานอ่อนกว่าฝั่งหุ้น** ต้นฉบับ v5.13 ให้เกรด C และระบุเองว่า
+#    "NEVER enters, exits, sizes or gates". บนทองยิ่งอ่อนลงอีก เพราะทฤษฎีที่รอง
+#    รับ (square-root impact law → metaorder ทิ้งรอยเท้าวอลุ่ม) ตั้งอยู่บน
+#    วอลุ่มของ "ตลาดที่ซื้อขายจริงรวมศูนย์" แต่ทองคำ spot เป็น OTC กระจาย
+#    ทั่วโลก — วอลุ่มที่เราเห็นเป็นเพียงเศษเสี้ยว
+#
+# 3) **คุณภาพวอลุ่มต่อสัญลักษณ์** (สำคัญที่สุด):
+#    - GC=F  : วอลุ่มฟิวเจอร์ส COMEX จริง แต่ซีรีส์ต่อเนื่องของ Yahoo มี
+#              **roll artifact** — วอลุ่มร่วงตอนใกล้หมดอายุแล้วเด้งเมื่อโรล
+#              ทำให้โหวตข้อ 4 ("ตลาดไม่ตาย") ผิดพลาดเป็นรอบ ๆ ตามปฏิทินสัญญา
+#    - PAXG-USD : วอลุ่มโทเคนคริปโต บาง ๆ ไม่ใช่วอลุ่มตลาดทองคำ
+#    ทั้งสองกรณี **โหวตข้อ 2 และ 4 คือ proxy ของ proxy** จึงมีสวิตช์ให้ตัดทิ้ง
+#    และแสดงผลเป็น "x/2 ที่วัดได้" แทนการแกล้งทำเป็นว่ามีครบ 4
+#
+# 4) **ยังไม่ผ่าน validation ใด ๆ กับทองคำ** ไม่มีการทดสอบว่าแท่งที่ขึ้น "สะสม"
+#    ให้ผลตอบแทนต่างจากแท่งอื่น — ห้ามใช้ตัดสินใจเข้า/ออก/ขนาดไม้
+# ---------------------------------------------------------------------------
+
+GOLD_VOL_NOTE = {
+    "GC=F": ("วอลุ่มฟิวเจอร์ส COMEX จริง — แต่ซีรีส์ต่อเนื่องมี roll artifact "
+             "(วอลุ่มร่วง/เด้งตามรอบสัญญา) โหวตที่ใช้วอลุ่มจึงเพี้ยนเป็นรอบ ๆ"),
+    "PAXG-USD": ("วอลุ่มโทเคนคริปโต ไม่ใช่วอลุ่มตลาดทองคำ — บางและกระจุกใน "
+                 "exchange ไม่กี่แห่ง ใช้เป็นตัวแทนแรงซื้อทองไม่ได้"),
+}
+
+
+def acc_squeeze_frame(xau: pd.DataFrame, p: GoldParams = None,
+                      acc_len: int = None, use_volume_votes: bool = True):
+    """คำนวณสะสม/สควีซบนทองคำด้วย *นิยามเดียวกับหุ้นไทย* (accum.py)
+
+    use_volume_votes=False -> ตัดโหวตข้อ 2 และ 4 (ที่พึ่งวอลุ่ม) ออก
+                              แล้วนับเกณฑ์ผ่านที่ >=2 จาก 2 ข้อที่วัดได้
+    """
+    import accum as ACC
+    p = p or GoldParams()
+    fr = ACC.acc_squeeze(xau, acc_len=acc_len or ACC.ACC_LEN_DEF,
+                         atr_len=p.atr_len, bos_len=p.bos_len)
+    if not use_volume_votes:
+        fr["acc_votes_meas"] = (fr["acc_flat_ok"].astype(int)
+                                + fr["acc_clv_ok"].astype(int))
+        need = 2
+    else:
+        fr["acc_votes_meas"] = fr["acc_votes"]
+        need = ACC.ACC_VOTES_MIN
+    fr["acc_hot"] = fr["acc_ctx"] & (fr["acc_votes_meas"] >= need)
+    fr["acc_show"] = fr["acc_hot"] & fr["acc_hot"].shift(1).fillna(False)
+    fr["_need"] = need
+    fr["_max_votes"] = 4 if use_volume_votes else 2
+    return fr
+
+
+def acc_squeeze_state(xau: pd.DataFrame, symbol: str = "", p: GoldParams = None,
+                      use_volume_votes: bool = True,
+                      closed_only: bool = False) -> dict:
+    """สถานะสะสม/สควีซของทองคำ ณ แท่งล่าสุด + ตารางตรวจสอบทีละข้อ"""
+    import accum as ACC
+    p = p or GoldParams()
+    d = xau.iloc[:-1] if (closed_only and len(xau) > 1) else xau
+    if len(d) < ACC.VOL_BASE_LEN + ACC.ACC_LEN_DEF:
+        return {"ok": False, "เหตุผล": "ข้อมูลสั้นเกินไป (ต้องการ ≥120 แท่ง)"}
+    fr = acc_squeeze_frame(d, p, use_volume_votes=use_volume_votes)
+    r = fr.iloc[-1]
+    vq = float(r.get("vol_quality", 0.0) or 0.0)
+    label, on_chart = ACC.status_label(bool(r["acc_show"]), bool(r["acc_hot"]),
+                                       bool(r["squeeze_on"]), r["bars_sq"])
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "bar_date": str(pd.Timestamp(fr.index[-1]).date()),
+        "สถานะ": label,
+        "มีเครื่องหมายบนชาร์ต Pine (ฝั่งหุ้น)": on_chart,
+        "โหวต": int(r["acc_votes_meas"]),
+        "เต็ม": int(r["_max_votes"]),
+        "ต้องการ": int(r["_need"]),
+        "acc_hot": bool(r["acc_hot"]),
+        "acc_show": bool(r["acc_show"]),
+        "squeeze_on": bool(r["squeeze_on"]),
+        "bars_sq": (None if r["bars_sq"] != r["bars_sq"] else int(r["bars_sq"])),
+        "pos_in_rng": (None if r["pos_in_rng"] != r["pos_in_rng"]
+                       else float(r["pos_in_rng"])),
+        "swing_hi": (None if r["swing_hi"] != r["swing_hi"] else float(r["swing_hi"])),
+        "close": float(r["Close"]),
+        "vol_quality": vq,
+        "vol_note": GOLD_VOL_NOTE.get(symbol, "ไม่ทราบที่มาของวอลุ่มสำหรับสัญลักษณ์นี้"),
+        "rows": ACC.audit_rows(fr, -1, vol_ok=use_volume_votes),
+        "frame": fr,
+    }
