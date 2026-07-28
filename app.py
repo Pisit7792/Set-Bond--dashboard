@@ -3053,7 +3053,8 @@ MODULE_NEEDS = {
                          "now_th"]),
     "set_swing": ("SW", ["VERSION", "scan_acc_squeeze", "acc_audit",
                          "ACC_SQ_BUCKETS", "BUCKETS_WITH_PINE_MARKER",
-                         "compute_frame", "state_today"]),
+                         "compute_frame", "state_today",
+                         "dist_chand", "backtest"]),
     "gold": ("G", ["VERSION", "GOLD_VOL_NOTE", "TAPE_DISCLOSURE",
                    "tape_frame", "tape_state", "compute_frame",
                    "state_today", "backtest"]),
@@ -3076,15 +3077,25 @@ def _guard(mods: list[str], what: str) -> bool:
     for r in bad:
         st.write(f"- `{r['ไฟล์']}` · เวอร์ชันที่พบ: **{r['ver']}** · "
                  f"ขาด: `{'`, `'.join(r['ขาด'][:8])}`")
-        st.caption(f"python โหลดมาจาก: `{r['path']}`")
-    st.info("เช็ก 3 อย่างถ้าอัปแล้วยังขึ้นข้อความนี้: (1) ดู path ด้านบน — "
-            "ถ้าไม่ใช่โฟลเดอร์ repo แปลว่ามีไฟล์ชื่อซ้ำบังอยู่ (2) ลบโฟลเดอร์ "
-            "`__pycache__` บน repo ทิ้ง (3) เปิดไฟล์บน GitHub แล้วดูบรรทัดบน ๆ "
-            "ว่ามีบรรทัด `VERSION = ...` ตรงกับที่ระบุใน README หรือยัง")
+        st.caption(f"python โหลดมาจาก: `{r['path']}`  ·  {r.get('fp', '—')}")
+    st.info("**อัปแล้วยังขึ้นข้อความนี้ = ไฟล์ยังไม่ถูกทับจริง** ไล่ตามลำดับ:  \n"
+            "1. ดู **เวลาแก้ล่าสุด** ที่แสดงต่อจาก path ด้านบน — ถ้าไม่ใช่เวลาที่"
+            "เพิ่งอัป แปลว่า GitHub ยังไม่ได้ทับไฟล์นี้ (ที่เหลือข้างล่างคือสาเหตุ)  \n"
+            "2. **คอมมิตลงคนละ branch** — ตอนอัปบนเว็บ GitHub ด้านล่างฟอร์มมีให้เลือก "
+            "*Commit directly to the `main` branch* กับ *Create a new branch…* "
+            "ถ้าเผลอเลือกอันหลัง ไฟล์จะไปค้างใน pull request ไม่ขึ้น repo จริง  \n"
+            "3. **ชื่อไฟล์ตัวพิมพ์ไม่ตรง** — GitHub แยกพิมพ์ใหญ่/เล็ก ถ้า iPad "
+            "auto-capitalize เป็น `Accum.py` มันจะกลายเป็นไฟล์ *ใหม่* และ "
+            "`accum.py` ตัวเก่ายังอยู่ (ดูในโฟลเดอร์ว่ามีสองไฟล์ไหม)  \n"
+            "4. เปิดไฟล์บน GitHub แล้วดูบรรทัดบน ๆ ว่า `VERSION = ...` "
+            "ตรงกับที่ระบุใน README หรือยัง  \n"
+            "5. ลบโฟลเดอร์ `__pycache__` บน repo ทิ้ง แล้ว **Reboot app**  \n"
+            "6. ถ้า path ด้านบนไม่ใช่โฟลเดอร์ repo แปลว่ามีไฟล์ชื่อซ้ำบังอยู่")
     st.caption("ตารางสถานะทุกโมดูลที่ระบบเช็ก:")
     st.dataframe(pd.DataFrame([
         {"ไฟล์": r["ไฟล์"], "เวอร์ชัน": r["ver"],
          "สถานะ": "✅ ครบ" if r["ok"] else "❌ ขาด " + ", ".join(r["ขาด"][:4]),
+         "ขนาด/เวลาแก้": r.get("fp", "—"),
          "โหลดจาก": r["path"]} for r in _module_report()]),
         use_container_width=True, hide_index=True)
     return False
@@ -3106,8 +3117,17 @@ def _module_report(only: list[str] | None = None) -> list[dict]:
                          "ขาด": ["import ไม่ได้"], "path": "—", "ver": "—"})
             continue
         miss = [a for a in needs if not hasattr(obj, a)]
+        _pth = getattr(obj, "__file__", "—")
+        # ขนาด + เวลาแก้ล่าสุดของไฟล์จริงบนดิสก์ — ใช้ตอบคำถาม
+        # "อัปแล้วทำไมยังเก่า": ถ้าเวลาไม่ขยับ = GitHub ยังไม่ได้ทับไฟล์นี้
+        try:
+            _stt = os.stat(_pth)
+            _fp = (f"{_stt.st_size:,} bytes · แก้ล่าสุด "
+                   + datetime.fromtimestamp(_stt.st_mtime).strftime("%d/%m/%Y %H:%M"))
+        except Exception:
+            _fp = "—"
         rows.append({"ไฟล์": f"{mod}.py", "ok": not miss, "ขาด": miss,
-                     "path": getattr(obj, "__file__", "—"),
+                     "path": _pth, "fp": _fp,
                      "ver": str(getattr(obj, "VERSION", "ไม่มี"))})
     return rows
 
@@ -3165,7 +3185,7 @@ def page_portfolio():
         for r in bad:
             st.write(f"- `{r['ไฟล์']}` · เวอร์ชันที่พบ: **{r['ver']}** · "
                      f"ขาด: {', '.join(r['ขาด'][:6])}")
-            st.caption(f"python โหลดมาจาก: `{r['path']}`")
+            st.caption(f"python โหลดมาจาก: `{r['path']}`  ·  {r.get('fp', '—')}")
         st.info("ถ้าอัปแล้วยังขึ้นข้อความนี้ ให้ดู path ด้านบน — ถ้าไม่ใช่โฟลเดอร์ "
                 "repo ของคุณ แปลว่ามีไฟล์ชื่อซ้ำบังอยู่ · และลองลบโฟลเดอร์ "
                 "`__pycache__` บน repo ออกด้วย")
