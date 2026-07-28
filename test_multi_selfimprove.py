@@ -247,7 +247,10 @@ if "_module_report" in _fns and _needs:
                  "app", "exec"), _ns)
     _ns.update(PF=__import__("pf_holdings"), GC=__import__("gold_council"),
                MM=__import__("multi_meeting"), LP=__import__("llm_providers"),
-               QE=__import__("quant_evaluation"))
+               QE=__import__("quant_evaluation"),
+               # v14: โมดูลที่เพิ่มเข้า MODULE_NEEDS ต้องใส่ alias ให้ครบด้วย
+               ACC=__import__("accum"), DS=__import__("datastamp"),
+               SW=__import__("set_swing"), G=__import__("gold"))
     check("app_report_all_ok_when_current",
           all(r["ok"] for r in _ns["_module_report"]()))
     check("app_report_shows_path",

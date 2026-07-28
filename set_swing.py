@@ -36,6 +36,8 @@ import pandas as pd
 import engine as E
 import gold as G
 import accum as ACC
+
+VERSION = "v5.13-r14"   # r14 = ย้ายสูตรไป accum.py + scan closed_only + acc_audit
 from profile_data import PROFILE
 from set_context import zsc
 

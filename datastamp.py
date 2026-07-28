@@ -21,6 +21,8 @@ from datetime import datetime, time, timedelta, timezone
 
 import pandas as pd
 
+VERSION = "1.0"
+
 try:                                    # py3.9+ มีมาให้ ถ้าไม่มีถอยไป UTC+7 คงที่
     from zoneinfo import ZoneInfo
     TZ_TH = ZoneInfo("Asia/Bangkok")

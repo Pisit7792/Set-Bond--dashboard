@@ -24,6 +24,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+VERSION = "1.1"         # 1.1 = เพิ่ม footprint แบบ v6.4.1 (distribution + trust_vol)
+
 # --------------------------------------------------------------------------
 # ค่าตั้งต้น = ตรงกับ input ของ Pine v5.13 หัวข้อ 18
 # --------------------------------------------------------------------------
@@ -240,3 +242,163 @@ def status_label(acc_show: bool, acc_hot: bool, sq_on: bool,
     if recent:
         return "🟠 เพิ่งคลายสควีซ (≤%d แท่ง)" % sq_win, False
     return "—", False
+
+
+# ===========================================================================
+# v6.4.1 FOOTPRINT — ตามสคริปต์ทองคำ "XAU Research Trend Pullback v4.1"
+# ===========================================================================
+# ต่างจากฝั่งหุ้น v5.13 อยู่ 4 จุด (ตามที่ผู้เขียนต้นฉบับกำหนดเอง ไม่ใช่ผมคิด):
+#   1) มี **ฝั่ง distribution** เพิ่มมา (กระจายของ) เป็นกระจกเงาของ accumulation
+#   2) มีสวิตช์ **trustVol (ค่าตั้งต้น = ปิด)** — เหตุผลของต้นฉบับ: บน CFD ทองคำ
+#      volume คือ "จำนวน tick" ไม่ใช่วอลุ่มที่ซื้อขายจริง
+#      ปิด -> โหวตที่ใช้วอลุ่มถูกบังคับเป็น False ทั้งหมด และเกณฑ์ผ่านเปลี่ยนเป็น
+#             "ต้องผ่านทั้ง footFlatOk และ clv" (2 จาก 2 ข้อที่เป็นราคาล้วน)
+#      เปิด -> เกณฑ์เดิม >= 3 จาก 4 โหวต
+#   3) บริบทใช้กรอบ **footLen** (ค่าตั้งต้น 20) ไม่ใช่ bosLen เหมือนฝั่งหุ้น
+#      footResist = ta.highest(high[1], footLen), footSupport = ta.lowest(low[1], footLen)
+#   4) ฝั่ง distribution ใช้ posInRng >= 0.35 (ครึ่งบน) และ clvAvg <= -0.10
+#
+# squeeze ของ v4.1 ตั้งค่าได้ (sqzLen/sqzBbMult/sqzKcMult) และ **ต่อเข้ากติกาเข้า
+# ได้จริงผ่าน primed** เมื่อเปิด useSqzGate — ต่างจากฝั่งหุ้นที่ปิดตายไว้
+# ค่าตั้งต้นของต้นฉบับคือ **ปิด** ("edge decayed") ที่นี่จึงปิดตามเป๊ะ
+# ---------------------------------------------------------------------------
+
+DIST_CLV_THR = -0.10
+DIST_POS_MIN = 0.35
+
+VOTE_NAMES_V641 = ["ราคานิ่ง (ราคาล้วน)", "ปิดค่อนบน/ล่าง CLV (ราคาล้วน)",
+                   "วอลุ่มฝั่งเด่น (ใช้วอลุ่ม)", "ตลาดไม่ตาย (ใช้วอลุ่ม)"]
+
+
+def footprint_v641(df: pd.DataFrame, atr: pd.Series,
+                   foot_len: int = ACC_LEN_DEF,
+                   foot_flat: float = ACC_FLAT_DEF,
+                   foot_ratio: float = ACC_RATIO_DEF,
+                   trust_vol: bool = False,
+                   use_foot: bool = True,
+                   vol_base_len: int = VOL_BASE_LEN) -> pd.DataFrame:
+    """accumulation + distribution footprint ตาม Pine v4.1 ตรงตัว"""
+    c, h, l = df["Close"], df["High"], df["Low"]
+    v = df["Volume"] if "Volume" in df.columns \
+        else pd.Series(np.nan, index=df.index, dtype=float)
+    out = pd.DataFrame(index=df.index)
+
+    foot_hi = h.rolling(foot_len).max()
+    foot_lo = l.rolling(foot_len).min()
+    out["pos_in_rng"] = pd.Series(
+        np.where(foot_hi > foot_lo, (c - foot_lo) / (foot_hi - foot_lo), 0.5),
+        index=df.index)
+    out["foot_flat_ok"] = ((c - c.shift(foot_len)).abs()
+                           <= foot_flat * atr).fillna(False)
+    rng_hl = h - l
+    clv_raw = pd.Series(np.where(rng_hl > 0, ((c - l) - (h - c)) / rng_hl, 0.0),
+                        index=df.index)
+    clv_avg = clv_raw.rolling(foot_len).mean()
+    up_vol = v.where(c > c.shift(1), 0.0).rolling(foot_len).sum()
+    dn_vol = v.where(c < c.shift(1), 0.0).rolling(foot_len).sum()
+    foot_act = v.rolling(foot_len).mean() / v.rolling(vol_base_len).mean().clip(lower=1.0)
+
+    tv = bool(trust_vol)
+    out["press_up_ok"] = (tv & (dn_vol > 0)
+                          & (up_vol >= foot_ratio * dn_vol)).fillna(False)
+    out["press_dn_ok"] = (tv & (up_vol > 0)
+                          & (dn_vol >= foot_ratio * up_vol)).fillna(False)
+    out["act_ok"] = (tv & (foot_act >= ACC_ACT_THR)).fillna(False)
+    out["acc_clv_ok"] = (clv_avg >= ACC_CLV_THR).fillna(False)
+    out["dist_clv_ok"] = (clv_avg <= DIST_CLV_THR).fillna(False)
+
+    out["acc_votes"] = (out["foot_flat_ok"].astype(int)
+                        + out["acc_clv_ok"].astype(int)
+                        + out["press_up_ok"].astype(int)
+                        + out["act_ok"].astype(int))
+    out["dist_votes"] = (out["foot_flat_ok"].astype(int)
+                         + out["dist_clv_ok"].astype(int)
+                         + out["press_dn_ok"].astype(int)
+                         + out["act_ok"].astype(int))
+    if tv:
+        acc_pass = out["acc_votes"] >= ACC_VOTES_MIN
+        dist_pass = out["dist_votes"] >= ACC_VOTES_MIN
+    else:                       # ราคาล้วน: ต้องผ่านทั้งสองข้อ (2 จาก 2)
+        acc_pass = out["foot_flat_ok"] & out["acc_clv_ok"]
+        dist_pass = out["foot_flat_ok"] & out["dist_clv_ok"]
+
+    out["foot_resist"] = h.shift(1).rolling(foot_len).max()
+    out["foot_support"] = l.shift(1).rolling(foot_len).min()
+    acc_ctx = ((c < out["foot_resist"])
+               & (out["pos_in_rng"] <= ACC_POS_MAX)).fillna(False)
+    dist_ctx = ((c > out["foot_support"])
+                & (out["pos_in_rng"] >= DIST_POS_MIN)).fillna(False)
+    out["acc_ctx"], out["dist_ctx"] = acc_ctx, dist_ctx
+    out["acc_hot"] = bool(use_foot) & acc_ctx & acc_pass
+    out["dist_hot"] = bool(use_foot) & dist_ctx & dist_pass
+    out["acc_show"] = out["acc_hot"] & out["acc_hot"].shift(1).fillna(False)
+    out["dist_show"] = out["dist_hot"] & out["dist_hot"].shift(1).fillna(False)
+
+    out["max_votes"] = 4 if tv else 2
+    out["need_votes"] = ACC_VOTES_MIN if tv else 2
+    out["acc_votes_shown"] = out["acc_votes"] if tv else (
+        out["foot_flat_ok"].astype(int) + out["acc_clv_ok"].astype(int))
+    out["dist_votes_shown"] = out["dist_votes"] if tv else (
+        out["foot_flat_ok"].astype(int) + out["dist_clv_ok"].astype(int))
+    # ค่าดิบไว้ทาบกับหน้าจอ TradingView
+    out["_net_move_atr"] = (c - c.shift(foot_len)).abs() / atr.replace(0, np.nan)
+    out["_clv_avg"] = clv_avg
+    out["_updn_ratio"] = up_vol / dn_vol.replace(0, np.nan)
+    out["_dnup_ratio"] = dn_vol / up_vol.replace(0, np.nan)
+    out["_foot_act"] = foot_act
+    out["vol_quality"] = volume_quality(v, vol_base_len)
+    return out
+
+
+def audit_rows_v641(fr: pd.DataFrame, i: int = -1, side: str = "acc",
+                    foot_flat: float = ACC_FLAT_DEF,
+                    foot_ratio: float = ACC_RATIO_DEF,
+                    trust_vol: bool = False) -> list[dict]:
+    """ตารางตรวจทีละข้อฝั่ง accumulation (side='acc') หรือ distribution"""
+    r = fr.iloc[i]
+    acc = side == "acc"
+
+    def num(x, nd=2, suf=""):
+        try:
+            xf = float(x)
+        except (TypeError, ValueError):
+            return "—"
+        return "—" if xf != xf else f"{xf:.{nd}f}{suf}"
+
+    rows = [
+        {"ข้อ": "1) ราคานิ่ง", "ค่าที่วัดได้": num(r.get("_net_move_atr"), 2, " ATR"),
+         "เกณฑ์": f"≤ {foot_flat} ATR", "ผ่าน": bool(r.get("foot_flat_ok", False)),
+         "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "2) " + ("ปิดค่อนบน (CLV)" if acc else "ปิดค่อนล่าง (CLV)"),
+         "ค่าที่วัดได้": num(r.get("_clv_avg"), 3),
+         "เกณฑ์": f"≥ {ACC_CLV_THR}" if acc else f"≤ {DIST_CLV_THR}",
+         "ผ่าน": bool(r.get("acc_clv_ok" if acc else "dist_clv_ok", False)),
+         "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "3) " + ("วอลุ่มขาซื้อเด่น" if acc else "วอลุ่มขาขายเด่น"),
+         "ค่าที่วัดได้": num(r.get("_updn_ratio" if acc else "_dnup_ratio"), 2, "×"),
+         "เกณฑ์": f"≥ {foot_ratio}×",
+         "ผ่าน": bool(r.get("press_up_ok" if acc else "press_dn_ok", False)),
+         "ใช้วอลุ่ม": "ใช่"},
+        {"ข้อ": "4) ตลาดไม่ตาย", "ค่าที่วัดได้": num(r.get("_foot_act"), 2, "×"),
+         "เกณฑ์": f"≥ {ACC_ACT_THR}× ฐาน {VOL_BASE_LEN} แท่ง",
+         "ผ่าน": bool(r.get("act_ok", False)), "ใช้วอลุ่ม": "ใช่"},
+        {"ข้อ": "บริบท: " + ("อยู่ใต้แนวต้าน 20 แท่ง" if acc
+                             else "อยู่เหนือแนวรับ 20 แท่ง"),
+         "ค่าที่วัดได้": num(r.get("foot_resist" if acc else "foot_support"), 2),
+         "เกณฑ์": f"close {num(r.get('Close'), 2)} ต้อง"
+                   + ("ต่ำกว่า" if acc else "สูงกว่า"),
+         "ผ่าน": bool(r.get("acc_ctx" if acc else "dist_ctx", False)),
+         "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "บริบท: ตำแหน่งในกรอบ",
+         "ค่าที่วัดได้": num(float(r.get("pos_in_rng", np.nan)) * 100, 0, "%"),
+         "เกณฑ์": (f"≤ {ACC_POS_MAX * 100:.0f}%" if acc
+                    else f"≥ {DIST_POS_MIN * 100:.0f}%"),
+         "ผ่าน": bool(r.get("pos_in_rng", 1.0) <= ACC_POS_MAX) if acc
+                 else bool(r.get("pos_in_rng", 0.0) >= DIST_POS_MIN),
+         "ใช้วอลุ่ม": "ไม่"},
+    ]
+    if not trust_vol:
+        for k in (2, 3):
+            rows[k]["ผ่าน"] = None
+            rows[k]["ค่าที่วัดได้"] = "ไม่นับ (trustVol ปิดตามต้นฉบับ)"
+    return rows

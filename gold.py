@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+VERSION = "v6.4.1-r14"  # พอร์ต v4.1: squeeze gate + accumulation/distribution footprint
+
 import engine as E
 
 
@@ -70,6 +72,17 @@ class GoldParams:
     vol_pc: float = 90.0
     max_gap_atr: float = 1.5
     max_cost_r: float = 10.0
+    # 12) Tape context (v6.4.1 / Pine v4.1) — ค่าตั้งต้น = พฤติกรรม v6.4 เดิมเป๊ะ
+    use_sqz_gate: bool = False            # ต้นฉบับปิด ("edge decayed")
+    sqz_len: int = 20
+    sqz_bb_mult: float = 2.0
+    sqz_kc_mult: float = 1.5
+    sq_win: int = 6
+    use_foot: bool = True                 # display only — ไม่แตะกติกาเข้า/ออก
+    foot_len: int = 20
+    foot_flat: float = 2.0
+    trust_vol: bool = False               # ต้นฉบับปิด (CFD = tick volume)
+    foot_ratio: float = 1.25
     # 8) Stop/trail
     atr_len: int = 14
     stop_mult: float = 1.8
@@ -264,12 +277,23 @@ def compute_frame(xau: pd.DataFrame, dxy_close=None, y10_close=None,
 
     gates = ((~df["vol_shock"]) & (~df["carry_stress"]) & df["cost_ok"]
              & df["er_ok"])
+    # v6.4.1: squeeze precondition ต่อเข้ากติกาเข้าจริงเมื่อ use_sqz_gate เปิด
+    #   ต้นฉบับ v4.1: longCond = ... and primed and ...
+    #   ค่าตั้งต้น = ปิด -> primed เป็น True ทุกแท่ง -> ผลลัพธ์เท่า v6.4 เดิมเป๊ะ
+    #   (มีเทสต์ equivalence ยืนยันใน test_v14.py)
+    import accum as _ACC
+    _sq = _ACC.squeeze_frame(df, sq_len=p.sqz_len, bb_mult=p.sqz_bb_mult,
+                             kc_mult=p.sqz_kc_mult)
+    df["squeeze_on"] = _sq["squeeze_on"]
+    df["bars_sq"] = _sq["bars_sq"]
+    df["primed"] = (pd.Series(True, index=df.index) if not p.use_sqz_gate
+                    else (df["bars_sq"] <= p.sq_win).fillna(False))
     df["long_cond"] = (df["regime_up"] & df["trig_l"] & df["score_ok_l"]
                        & gates & df["gap_ok_l"] & df["dxy_ok_l"]
-                       & df["y10_ok_l"] & df["w_ok_l"])
+                       & df["y10_ok_l"] & df["w_ok_l"] & df["primed"])
     df["short_cond"] = (df["regime_dn"] & df["trig_s"] & df["score_ok_s"]
                         & gates & df["gap_ok_s"] & df["dxy_ok_s"]
-                        & df["y10_ok_s"] & df["w_ok_s"])
+                        & df["y10_ok_s"] & df["w_ok_s"] & df["primed"])
     df.attrs["dxy_has"] = dxy_has
     df.attrs["y10_has"] = y10_has
     return df
@@ -298,6 +322,8 @@ def state_today(fr: pd.DataFrame, p: GoldParams = None,
         status = "DXY veto (ดอลลาร์ขาขึ้นยืนยัน)"
     elif reg == "DOWN" and not r["dxy_ok_s"]:
         status = "DXY veto (ดอลลาร์ขาลงยืนยัน)"
+    elif not bool(r.get("primed", True)):
+        status = "No squeeze yet — squeeze gate เปิดอยู่ (v6.4.1)"
     elif bool(r["long_cond"]) or bool(r["short_cond"]):
         status = "TRIGGER — เงื่อนไขเข้าครบเมื่อปิดแท่งนี้"
     else:
@@ -311,6 +337,12 @@ def state_today(fr: pd.DataFrame, p: GoldParams = None,
 
     add("Regime SMA200+slope มีทิศ", reg != "MIXED", "A",
         f"{reg} (ปิดเทียบ SMA200 ของเมื่อวาน)")
+    if p.use_sqz_gate:
+        _bs = r.get("bars_sq", float("nan"))
+        add(f"Squeeze ≤ {p.sq_win} แท่ง (primed)", bool(r.get("primed", True)),
+            "B (ต้นฉบับปิดค่าตั้งต้น)",
+            "ยังไม่เคยเกิด squeeze" if _bs != _bs
+            else f"squeeze ล่าสุด {int(_bs)} แท่งก่อน")
     if side == "LONG":
         add("Pullback trigger (แตะ EMA21 แล้วปิดกลับ)", r["trig_l"], "A",
             f"RSI {r['rsi']:.0f} ≥ {p.rsi_floor_l:.0f}")
@@ -546,98 +578,113 @@ def validation_verdict(bt: dict) -> tuple:
 
 
 # ===========================================================================
-# v14: ACCUMULATION-FOOTPRINT WATCH + SQUEEZE บนทองคำ
-# ===========================================================================
-# ⚠️ เปิดเผยตรง ๆ ก่อนใช้ — สามข้อนี้สำคัญกว่าตัวเลขที่จะได้:
+# v6.4.1 (Pine "XAU Research Trend Pullback v4.1") — Tape context
+#   1) Squeeze gate (TTM: BB ใน KC) — เป็น "ประตูเข้า" ได้จริงเมื่อเปิด useSqzGate
+#      ต้นฉบับตั้งค่าตั้งต้น **ปิด** เพราะระบุเองว่า edge ของ squeeze เดี่ยว ๆ
+#      "decayed" (ตรงกับที่ v5.13 ฝั่งหุ้นสรุปไว้) — ที่นี่ปิดตามเป๊ะ
+#   2) Accumulation / Distribution footprint — **DISPLAY ONLY เกรด C**
+#      ต้นฉบับเขียนเองว่า "They NEVER enter, exit, size, or gate"
 #
-# 1) **ไม่ได้อยู่ในสคริปต์ XAU RTP v6.4** ผู้เขียนต้นฉบับทองคำไม่เคยใส่ส่วนนี้
-#    นี่คือการ "ยกนิยามจาก SET Swing v5.13 (Pine) มาวางบนข้อมูลทอง" ตามที่ผู้ใช้
-#    ขอให้เหมือนกับหน้าหุ้น — สูตรเหมือนกันเป๊ะ แต่ **ไม่ใช่ของต้นฉบับทอง**
+# จุดที่ต้นฉบับ v4.1 ระวังเรื่องวอลุ่มด้วยตัวเอง (ไม่ใช่ผมเติม):
+#   "On a spot-gold CFD volume is tick count, not real traded volume, so a
+#    'trust tick volume' switch is OFF by default and the footprint then runs
+#    on the two price-based votes only (flat range plus close-location value)"
+#   -> trustVol ปิดเป็นค่าตั้งต้น, เกณฑ์ผ่านกลายเป็น "ผ่านทั้ง 2 ข้อราคาล้วน"
 #
-# 2) **หลักฐานอ่อนกว่าฝั่งหุ้น** ต้นฉบับ v5.13 ให้เกรด C และระบุเองว่า
-#    "NEVER enters, exits, sizes or gates". บนทองยิ่งอ่อนลงอีก เพราะทฤษฎีที่รอง
-#    รับ (square-root impact law → metaorder ทิ้งรอยเท้าวอลุ่ม) ตั้งอยู่บน
-#    วอลุ่มของ "ตลาดที่ซื้อขายจริงรวมศูนย์" แต่ทองคำ spot เป็น OTC กระจาย
-#    ทั่วโลก — วอลุ่มที่เราเห็นเป็นเพียงเศษเสี้ยว
-#
-# 3) **คุณภาพวอลุ่มต่อสัญลักษณ์** (สำคัญที่สุด):
-#    - GC=F  : วอลุ่มฟิวเจอร์ส COMEX จริง แต่ซีรีส์ต่อเนื่องของ Yahoo มี
-#              **roll artifact** — วอลุ่มร่วงตอนใกล้หมดอายุแล้วเด้งเมื่อโรล
-#              ทำให้โหวตข้อ 4 ("ตลาดไม่ตาย") ผิดพลาดเป็นรอบ ๆ ตามปฏิทินสัญญา
-#    - PAXG-USD : วอลุ่มโทเคนคริปโต บาง ๆ ไม่ใช่วอลุ่มตลาดทองคำ
-#    ทั้งสองกรณี **โหวตข้อ 2 และ 4 คือ proxy ของ proxy** จึงมีสวิตช์ให้ตัดทิ้ง
-#    และแสดงผลเป็น "x/2 ที่วัดได้" แทนการแกล้งทำเป็นว่ามีครบ 4
-#
-# 4) **ยังไม่ผ่าน validation ใด ๆ กับทองคำ** ไม่มีการทดสอบว่าแท่งที่ขึ้น "สะสม"
-#    ให้ผลตอบแทนต่างจากแท่งอื่น — ห้ามใช้ตัดสินใจเข้า/ออก/ขนาดไม้
+# หมายเหตุของแอปนี้ (ต่างจากบริบท CFD ของต้นฉบับ — ต้องรู้ก่อนเปิด trustVol):
+#   * GC=F  = วอลุ่มฟิวเจอร์ส COMEX จริง ไม่ใช่ tick count — แต่ซีรีส์ต่อเนื่อง
+#             ของ Yahoo มี roll artifact (วอลุ่มร่วง/เด้งตามรอบสัญญา)
+#   * PAXG-USD = วอลุ่มโทเคนคริปโต ไม่ใช่วอลุ่มตลาดทองคำ
+#   ทั้งสองกรณีจึงยัง **ไม่แนะนำให้เปิด trustVol** และค่าตั้งต้นคือปิดตามต้นฉบับ
 # ---------------------------------------------------------------------------
 
 GOLD_VOL_NOTE = {
-    "GC=F": ("วอลุ่มฟิวเจอร์ส COMEX จริง — แต่ซีรีส์ต่อเนื่องมี roll artifact "
-             "(วอลุ่มร่วง/เด้งตามรอบสัญญา) โหวตที่ใช้วอลุ่มจึงเพี้ยนเป็นรอบ ๆ"),
+    "GC=F": ("วอลุ่มฟิวเจอร์ส COMEX จริง (ไม่ใช่ tick count แบบ CFD ที่ต้นฉบับ"
+             "เตือน) — แต่ซีรีส์ต่อเนื่องของ Yahoo มี roll artifact: วอลุ่ม"
+             "ร่วงตอนใกล้หมดอายุแล้วเด้งเมื่อโรล ทำให้โหวต 'ตลาดไม่ตาย' "
+             "เพี้ยนเป็นรอบ ๆ ตามปฏิทินสัญญา"),
     "PAXG-USD": ("วอลุ่มโทเคนคริปโต ไม่ใช่วอลุ่มตลาดทองคำ — บางและกระจุกใน "
                  "exchange ไม่กี่แห่ง ใช้เป็นตัวแทนแรงซื้อทองไม่ได้"),
 }
 
+TAPE_DISCLOSURE = (
+    "ต้นฉบับ v4.1 ติดป้ายเองว่า footprint เป็น **DISPLAY-ONLY เกรด C** และ "
+    "\"NEVER enter, exit, size, or gate\" · ส่วน squeeze gate ต้นฉบับ**ปิด**"
+    "เป็นค่าตั้งต้นเพราะระบุว่า edge เดี่ยว ๆ decayed — ทั้งสองอย่างจึงเป็น"
+    "บริบทเทป ไม่ใช่สัญญาณ")
 
-def acc_squeeze_frame(xau: pd.DataFrame, p: GoldParams = None,
-                      acc_len: int = None, use_volume_votes: bool = True):
-    """คำนวณสะสม/สควีซบนทองคำด้วย *นิยามเดียวกับหุ้นไทย* (accum.py)
 
-    use_volume_votes=False -> ตัดโหวตข้อ 2 และ 4 (ที่พึ่งวอลุ่ม) ออก
-                              แล้วนับเกณฑ์ผ่านที่ >=2 จาก 2 ข้อที่วัดได้
-    """
+def tape_frame(xau: pd.DataFrame, p: GoldParams = None) -> pd.DataFrame:
+    """squeeze + accumulation/distribution footprint ตาม Pine v4.1 ตรงตัว"""
     import accum as ACC
     p = p or GoldParams()
-    fr = ACC.acc_squeeze(xau, acc_len=acc_len or ACC.ACC_LEN_DEF,
-                         atr_len=p.atr_len, bos_len=p.bos_len)
-    if not use_volume_votes:
-        fr["acc_votes_meas"] = (fr["acc_flat_ok"].astype(int)
-                                + fr["acc_clv_ok"].astype(int))
-        need = 2
-    else:
-        fr["acc_votes_meas"] = fr["acc_votes"]
-        need = ACC.ACC_VOTES_MIN
-    fr["acc_hot"] = fr["acc_ctx"] & (fr["acc_votes_meas"] >= need)
-    fr["acc_show"] = fr["acc_hot"] & fr["acc_hot"].shift(1).fillna(False)
-    fr["_need"] = need
-    fr["_max_votes"] = 4 if use_volume_votes else 2
-    return fr
+    atr_chart = atr_wilder(xau, p.atr_len)          # atrChart = ta.atr(atrLenIn)
+    out = ACC.footprint_v641(xau, atr_chart, foot_len=p.foot_len,
+                             foot_flat=p.foot_flat, foot_ratio=p.foot_ratio,
+                             trust_vol=p.trust_vol, use_foot=p.use_foot)
+    sq = ACC.squeeze_frame(xau, sq_len=p.sqz_len, bb_mult=p.sqz_bb_mult,
+                           kc_mult=p.sqz_kc_mult)
+    out["squeeze_on"] = sq["squeeze_on"]
+    out["bars_sq"] = sq["bars_sq"]
+    out["primed"] = (pd.Series(True, index=xau.index) if not p.use_sqz_gate
+                     else (out["bars_sq"] <= p.sq_win).fillna(False))
+    out["atr_chart"] = atr_chart
+    keep = [c for c in ["Open", "High", "Low", "Close", "Volume"]
+            if c in xau.columns]
+    return pd.concat([xau[keep], out], axis=1)
 
 
-def acc_squeeze_state(xau: pd.DataFrame, symbol: str = "", p: GoldParams = None,
-                      use_volume_votes: bool = True,
-                      closed_only: bool = False) -> dict:
-    """สถานะสะสม/สควีซของทองคำ ณ แท่งล่าสุด + ตารางตรวจสอบทีละข้อ"""
+def tape_state(xau: pd.DataFrame, symbol: str = "", p: GoldParams = None,
+               closed_only: bool = False) -> dict:
+    """สถานะบริบทเทป ณ แท่งล่าสุด + ตารางตรวจทีละข้อทั้งสองฝั่ง"""
     import accum as ACC
     p = p or GoldParams()
     d = xau.iloc[:-1] if (closed_only and len(xau) > 1) else xau
-    if len(d) < ACC.VOL_BASE_LEN + ACC.ACC_LEN_DEF:
-        return {"ok": False, "เหตุผล": "ข้อมูลสั้นเกินไป (ต้องการ ≥120 แท่ง)"}
-    fr = acc_squeeze_frame(d, p, use_volume_votes=use_volume_votes)
+    need = ACC.VOL_BASE_LEN + p.foot_len if p.trust_vol else p.foot_len + 30
+    if len(d) < need:
+        return {"ok": False,
+                "เหตุผล": f"ข้อมูลสั้นเกินไป (ต้องการ ≥{need} แท่ง, มี {len(d)})"}
+    fr = tape_frame(d, p)
     r = fr.iloc[-1]
-    vq = float(r.get("vol_quality", 0.0) or 0.0)
-    label, on_chart = ACC.status_label(bool(r["acc_show"]), bool(r["acc_hot"]),
-                                       bool(r["squeeze_on"]), r["bars_sq"])
+    b_sq = r["bars_sq"]
+    if bool(r["acc_show"]):
+        label = "🟡 สะสม (accumulation)"
+    elif bool(r["dist_show"]):
+        label = "🟣 กระจาย (distribution)"
+    elif bool(r["acc_hot"]):
+        label = "⚪ สะสมแท่งแรก (ยังไม่ครบ 2 แท่ง)"
+    elif bool(r["dist_hot"]):
+        label = "⚪ กระจายแท่งแรก (ยังไม่ครบ 2 แท่ง)"
+    else:
+        label = "—"
+    # ข้อความเดียวกับแถว "Squeeze / tape" บน dashboard ของ Pine v4.1
+    foot_txt = ("off" if not p.use_foot else
+                ("ACCUM" if bool(r["acc_show"]) else
+                 ("DISTRIB" if bool(r["dist_show"]) else "-")))
+    pine_cell = (("SQZ" if bool(r["squeeze_on"]) else "no sqz") + " / "
+                 + foot_txt + ("" if p.trust_vol else " (px only)"))
     return {
-        "ok": True,
-        "symbol": symbol,
+        "ok": True, "symbol": symbol,
         "bar_date": str(pd.Timestamp(fr.index[-1]).date()),
         "สถานะ": label,
-        "มีเครื่องหมายบนชาร์ต Pine (ฝั่งหุ้น)": on_chart,
-        "โหวต": int(r["acc_votes_meas"]),
-        "เต็ม": int(r["_max_votes"]),
-        "ต้องการ": int(r["_need"]),
-        "acc_hot": bool(r["acc_hot"]),
-        "acc_show": bool(r["acc_show"]),
+        "pine_cell": pine_cell,
+        "โหวตสะสม": int(r["acc_votes_shown"]),
+        "โหวตกระจาย": int(r["dist_votes_shown"]),
+        "เต็ม": int(r["max_votes"]), "ต้องการ": int(r["need_votes"]),
+        "acc_hot": bool(r["acc_hot"]), "acc_show": bool(r["acc_show"]),
+        "dist_hot": bool(r["dist_hot"]), "dist_show": bool(r["dist_show"]),
         "squeeze_on": bool(r["squeeze_on"]),
-        "bars_sq": (None if r["bars_sq"] != r["bars_sq"] else int(r["bars_sq"])),
+        "bars_sq": (None if b_sq != b_sq else int(b_sq)),
+        "primed": bool(r["primed"]),
         "pos_in_rng": (None if r["pos_in_rng"] != r["pos_in_rng"]
                        else float(r["pos_in_rng"])),
-        "swing_hi": (None if r["swing_hi"] != r["swing_hi"] else float(r["swing_hi"])),
         "close": float(r["Close"]),
-        "vol_quality": vq,
-        "vol_note": GOLD_VOL_NOTE.get(symbol, "ไม่ทราบที่มาของวอลุ่มสำหรับสัญลักษณ์นี้"),
-        "rows": ACC.audit_rows(fr, -1, vol_ok=use_volume_votes),
+        "trust_vol": bool(p.trust_vol),
+        "vol_quality": float(r.get("vol_quality", 0.0) or 0.0),
+        "vol_note": GOLD_VOL_NOTE.get(symbol, "ไม่ทราบที่มาของวอลุ่มของสัญลักษณ์นี้"),
+        "rows_acc": ACC.audit_rows_v641(fr, -1, "acc", p.foot_flat,
+                                        p.foot_ratio, p.trust_vol),
+        "rows_dist": ACC.audit_rows_v641(fr, -1, "dist", p.foot_flat,
+                                         p.foot_ratio, p.trust_vol),
         "frame": fr,
     }

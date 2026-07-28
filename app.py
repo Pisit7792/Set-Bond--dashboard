@@ -71,7 +71,7 @@ ZONES = {
                                 "จำลองสถานการณ์", "วิกฤตแบงก์รัน", "ข่าวสาร",
                                 "ห้องประชุม AI", "ข้อมูลมหภาค", "รายประเทศ (Bond)",
                                 "Trend สินทรัพย์โลก", "World Monitor",
-                                "ทองคำ XAU (RTP v6.4)", "🥇 Gold Council",
+                                "ทองคำ XAU (RTP v6.4.1)", "🥇 Gold Council",
                                 "คริปโต (BTC/ETH)"],
     "📖 ร่วม": ["Trade Log & สถิติ", "คู่มืออ่านค่า", "ข้อจำกัด & จุดพัฒนา"],
 }
@@ -1502,13 +1502,16 @@ def page_set_flow():
             "ดาวน์โหลดแล้วอัปทับเองบนเว็บ GitHub")
 
 def page_gold():
-    st.subheader("ทองคำ — XAU Research Trend Pullback v6.4 (พอร์ตจากสคริปต์ของคุณ)")
+    if not _guard(["gold", "accum"], "หน้าทองคำ (v6.4.1)"):
+        return
+    st.subheader("ทองคำ — XAU Research Trend Pullback v6.4.1 (พอร์ตจากสคริปต์ของคุณ)")
     st.warning("**อ่านก่อนใช้:** (1) ใช้ **GC=F ฟิวเจอร์ส** แทน spot XAUUSD — "
                "ระดับ/ATR ใกล้เคียงแต่ basis ต่างเล็กน้อย (2) ผล backtest เป็น "
                "in-sample และชื่อรุ่น v6.4 บ่งว่าผ่านการปรับหลายรอบ → DSR ตั้ง "
                "trials สูงไว้ก่อน (3) Tier C ของสคริปต์ (real-yield, gold-DXY "
                "inverse) **จงใจไม่โค้ด** ตามต้นฉบับ (4) เป้า validate ของสคริปต์เอง: "
-               "**30-50 เทรดจริงใน journal, PF > 1.5 หลัง swap**")
+               "**30-50 เทรดจริงใน journal, PF > 1.5 หลัง swap** (5) v6.4.1 เพิ่ม "
+               "squeeze gate + accumulation/distribution footprint — ทั้งคู่**ปิด/display-only เป็นค่าตั้งต้น** ผลจึงเท่า v6.4 เดิมทุกแท่ง")
     gsrc = st.radio("แหล่งข้อมูลราคา",
                     ["PAXG-USD — โทเคนอิงทอง เทรดทุกวัน 24/7 (แสดง/คำนวณทุกวันตามที่ขอ)",
                      "GC=F — ฟิวเจอร์ส COMEX (จันทร์-ศุกร์)"], 0, horizontal=True)
@@ -1526,11 +1529,27 @@ def page_gold():
     use_er = c6.checkbox("Tier B: ER hard gate", False)
     use_w = c7.checkbox("Tier B: Weekly EMA gate", False)
     use_y10 = c8.checkbox("Tier B: US10Y gate (ต้องเปิดฝั่ง Global Live)", False)
-    g_trials = st.number_input("DSR trials (v6.4 → แนะนำ ≥ 30)", 1, 5000, 30)
+    g_trials = st.number_input("DSR trials (v6.4.1 → แนะนำ ≥ 30)", 1, 5000, 30)
+    st.caption("**v6.4.1 (Pine v4.1) — Tape context** · ค่าตั้งต้นทั้งสองสวิตช์ "
+               "= ปิด ตามต้นฉบับ ซึ่งให้ผลเท่ากับ v6.4 เดิมทุกแท่ง")
+    c9, c10, c11 = st.columns(3)
+    trust_vol = c9.checkbox("trustVol — เชื่อวอลุ่ม (+โหวตวอลุ่ม 2 ข้อ)", False,
+                            help="ต้นฉบับปิดเป็นค่าตั้งต้น เหตุผลของต้นฉบับ: บน "
+                                 "CFD ทองคำ volume คือจำนวน tick ไม่ใช่วอลุ่มจริง "
+                                 "· ปิด = ใช้เฉพาะโหวตราคาล้วน 2 ข้อ และต้องผ่านทั้งคู่")
+    sqz_gate = c10.checkbox("useSqzGate — ให้ squeeze เป็นประตูเข้า", False,
+                            help="ต้นฉบับปิดเป็นค่าตั้งต้น (edge decayed) · "
+                                 "เปิดแล้ว backtest ด้านล่างจะเปลี่ยนตามด้วย")
+    g_closed = c11.checkbox("ใช้เฉพาะแท่งที่ปิดแล้ว (ส่วนบริบทเทป)", True,
+                            help="PAXG เดิน 7 วัน/สัปดาห์ แท่ง 'วันนี้' ไม่เคยจบจริง")
+    if sqz_gate:
+        st.warning("⚠️ เปิด squeeze gate = **เปลี่ยนกติกาเข้า** ไม่ใช่แค่การแสดงผล "
+                   "— ตัวเลข backtest ด้านล่างจะไม่ใช่ค่าตั้งต้นของต้นฉบับอีกต่อไป")
 
     p = G.GoldParams(spread_cents=spread_c, swap_long_oz=swap_l,
                      swap_short_oz=swap_s, use_carry=use_carry,
-                     use_er_gate=use_er, use_htf_w=use_w, use_y10=use_y10)
+                     use_er_gate=use_er, use_htf_w=use_w, use_y10=use_y10,
+                     trust_vol=trust_vol, use_sqz_gate=sqz_gate)
     xau, dxy, jpy, vix = C_gold_bundle(gsym, g_period, use_carry)
     stamp_add(f"ราคาทองคำ ({gsym})", xau,
               "24H" if gsym == "PAXG-USD" else "COMEX",
@@ -1601,78 +1620,67 @@ def page_gold():
     plot(figg)
 
     # ------------------------------------------------------------------
-    # v14: จุดสะสม / จุดสควีซ บนทองคำ (นิยามยกมาจาก SET Swing v5.13)
+    # v6.4.1: Tape context — squeeze gate + accumulation/distribution
     # ------------------------------------------------------------------
     st.divider()
-    st.markdown("#### 🟡 จุดสะสม / 🔵 จุดสควีซ บนทองคำ")
-    st.error(
-        "**ไม่ใช่ของสคริปต์ทองคำ v6.4** — ต้นฉบับ XAU RTP v6.4 ไม่เคยมีส่วนนี้ "
-        "นี่คือการยกนิยามจาก **SET Swing v5.13 (ฝั่งหุ้น)** มาวางบนข้อมูลทอง "
-        "ตามที่ขอให้เหมือนหน้าหุ้น · สูตรเหมือนกันเป๊ะทุกตัวเลข แต่ "
-        "**ยังไม่เคย validate กับทองคำเลย** และต้นฉบับฝั่งหุ้นให้เกรด C พร้อม"
-        "กำกับว่า \"NEVER enters, exits, sizes or gates\" → ห้ามใช้ตัดสินใจ"
-        "เข้า/ออก/ขนาดไม้ ใช้ได้อย่างเดียวคือเป็นคิวเฝ้าดู")
-    st.warning(
-        "**ปัญหาวอลุ่ม — ข้อจำกัดที่แรงกว่าฝั่งหุ้นมาก:** ทฤษฎีที่รองรับ "
-        "(square-root impact law → ออร์เดอร์ใหญ่ทิ้งรอยเท้าวอลุ่ม) ตั้งอยู่บน"
-        "วอลุ่มของตลาดรวมศูนย์ แต่ทองคำ spot เป็น OTC กระจายทั่วโลก — "
-        f"วอลุ่มที่เห็นเป็นเศษเสี้ยว\n\n**{gsym}**: "
-        + G.GOLD_VOL_NOTE.get(gsym, "") +
-        "\n\nโหวตข้อ 2 (วอลุ่มขาซื้อเด่น) และข้อ 4 (ตลาดไม่ตาย) ใช้วอลุ่ม "
-        "จึงมีสวิตช์ให้ตัดทิ้งได้ ถ้าตัด ระบบจะนับเป็น **x/2 ที่วัดได้** "
-        "แทนการแกล้งทำเป็นว่ามีครบ 4")
-    gv1, gv2 = st.columns([2, 3])
-    use_vv = gv1.checkbox("นับโหวตที่ใช้วอลุ่มด้วย (ข้อ 2 และ 4)", True,
-                          help="ปิด = เชื่อเฉพาะโหวตที่ไม่พึ่งวอลุ่ม "
-                               "(ราคานิ่ง + ปิดค่อนบน) แล้วต้องผ่านทั้ง 2 ข้อ")
-    g_closed = gv2.checkbox("ใช้เฉพาะแท่งที่ปิดแล้ว", True,
-                            help="ตัดแท่งวันปัจจุบันที่ยังวิ่งไม่จบออก "
-                                 "(PAXG เดินทุกวัน แท่ง 'วันนี้' ไม่เคยจบจริง)")
-    gacc = G.acc_squeeze_state(xau, gsym, p, use_volume_votes=use_vv,
-                               closed_only=g_closed)
-    if not gacc.get("ok"):
-        st.info(gacc.get("เหตุผล", "คำนวณไม่ได้"))
+    st.markdown("#### 🟡 จุดสะสม / 🟣 จุดกระจาย / 🔵 จุดสควีซ (v6.4.1)")
+    st.info(
+        "**พอร์ตตรงจากสคริปต์ของคุณเอง** — *XAU Research Trend Pullback v4.1* "
+        "หัวข้อ 12) Tape context · " + G.TAPE_DISCLOSURE)
+    if trust_vol:
+        st.warning("⚠️ เปิด trustVol แล้ว — บริบทของแอปนี้ต่างจากที่ต้นฉบับ"
+                   f"สมมติไว้ (CFD): **{gsym}** — " + G.GOLD_VOL_NOTE.get(gsym, ""))
+
+    tp = G.tape_state(xau, gsym, p, closed_only=g_closed)
+    if not tp.get("ok"):
+        st.info(tp.get("เหตุผล", "คำนวณไม่ได้"))
     else:
         ga = st.columns(4)
-        ga[0].metric("สถานะ", gacc["สถานะ"] if gacc["สถานะ"] != "—"
+        ga[0].metric("สถานะเทป", tp["สถานะ"] if tp["สถานะ"] != "—"
                      else "ไม่เข้าเงื่อนไข")
-        ga[1].metric("โหวตสะสม", f"{gacc['โหวต']}/{gacc['เต็ม']}",
-                     f"ต้องการ ≥{gacc['ต้องการ']}", delta_color="off")
-        ga[2].metric("Squeeze", "ON" if gacc["squeeze_on"] else
-                     (f"คลาย {gacc['bars_sq']} แท่ง"
-                      if gacc["bars_sq"] is not None else "ไม่เคยเกิด"))
+        ga[1].metric("โหวต สะสม / กระจาย",
+                     f"{tp['โหวตสะสม']} / {tp['โหวตกระจาย']} จาก {tp['เต็ม']}",
+                     f"ต้องการ ≥{tp['ต้องการ']}", delta_color="off")
+        ga[2].metric("Squeeze", "ON" if tp["squeeze_on"] else
+                     (f"คลาย {tp['bars_sq']} แท่ง"
+                      if tp["bars_sq"] is not None else "ไม่เคยเกิด"))
         ga[3].metric("ตำแหน่งในกรอบ 20 แท่ง",
-                     f"{gacc['pos_in_rng'] * 100:.0f}%"
-                     if gacc["pos_in_rng"] is not None else "—",
-                     "ต้อง ≤ 65%", delta_color="off")
-        st.caption(f"แท่งที่ใช้คำนวณ: **{gacc['bar_date']}** · "
-                   f"คุณภาพวอลุ่ม (สัดส่วนแท่งที่มีวอลุ่ม > 0 ใน 100 แท่ง): "
-                   f"{gacc['vol_quality'] * 100:.0f}%")
-        if gacc["vol_quality"] < 0.9 and use_vv:
-            st.warning("⚠️ วอลุ่มขาดหายเกิน 10% ของหน้าต่าง — โหวตข้อ 2/4 "
-                       "ไม่น่าเชื่อถือ ควรปิดสวิตช์วอลุ่มด้านบน")
-        gdf = pd.DataFrame(gacc["rows"])
-        gdf["ผ่าน"] = gdf["ผ่าน"].map({True: "✅", False: "❌", None: "—"})
-        st.dataframe(gdf, hide_index=True, use_container_width=True)
+                     f"{tp['pos_in_rng'] * 100:.0f}%"
+                     if tp["pos_in_rng"] is not None else "—",
+                     "สะสม ≤65% · กระจาย ≥35%", delta_color="off")
+        st.caption(f"แถว **Squeeze / tape** ที่ควรเห็นบน TradingView: "
+                   f"`{tp['pine_cell']}` · แท่งที่ใช้คำนวณ **{tp['bar_date']}** · "
+                   f"คุณภาพวอลุ่ม {tp['vol_quality'] * 100:.0f}% "
+                   f"(สัดส่วนแท่งที่มีวอลุ่ม > 0 ใน 100 แท่ง)")
+        tabA, tabD = st.tabs(["ตรวจทีละข้อ — ฝั่งสะสม",
+                              "ตรวจทีละข้อ — ฝั่งกระจาย"])
+        for _tab, _rows in ((tabA, tp["rows_acc"]), (tabD, tp["rows_dist"])):
+            with _tab:
+                _df = pd.DataFrame(_rows)
+                _df["ผ่าน"] = _df["ผ่าน"].map({True: "✅", False: "❌",
+                                                None: "—"})
+                st.dataframe(_df, hide_index=True, use_container_width=True)
 
-        gfr = gacc["frame"]
+        gfr = tp["frame"]
         gshow = gfr.tail(260)
         figa = go.Figure()
         figa.add_trace(go.Candlestick(x=gshow.index, open=gshow["Open"],
                                       high=gshow["High"], low=gshow["Low"],
                                       close=gshow["Close"], name=gsym))
-        sq_pts = gshow[gshow["squeeze_on"]]
-        if len(sq_pts):
+        for _col, _nm, _sym, _c, _off in [
+                ("squeeze_on", "สควีซ (บีบตัว)", "circle", "#2ac7e0", 0.985),
+                ("acc_show", "สะสม (display only)", "square", "#e8c22a", 0.97)]:
+            _p = gshow[gshow[_col]]
+            if len(_p):
+                figa.add_trace(go.Scatter(
+                    x=_p.index, y=_p["Low"] * _off, mode="markers", name=_nm,
+                    marker=dict(symbol=_sym, size=7, color=_c)))
+        _pd = gshow[gshow["dist_show"]]
+        if len(_pd):
             figa.add_trace(go.Scatter(
-                x=sq_pts.index, y=sq_pts["Low"] * 0.985, mode="markers",
-                name="สควีซ (บีบตัว)",
-                marker=dict(symbol="circle", size=6, color="#2ac7e0")))
-        ac_pts = gshow[gshow["acc_show"]]
-        if len(ac_pts):
-            figa.add_trace(go.Scatter(
-                x=ac_pts.index, y=ac_pts["Low"] * 0.97, mode="markers",
-                name="สะสม (footprint)",
-                marker=dict(symbol="square", size=8, color="#e8c22a")))
+                x=_pd.index, y=_pd["High"] * 1.03, mode="markers",
+                name="กระจาย (display only)",
+                marker=dict(symbol="square", size=8, color="#d13fd1")))
         figa.update_layout(height=380, xaxis_rangeslider_visible=False,
                            margin=dict(l=10, r=10, t=30, b=10),
                            legend=dict(orientation="h"))
@@ -1680,22 +1688,24 @@ def page_gold():
             figa.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
         plot(figa)
         st.caption(
-            f"260 แท่งล่าสุด: สะสม {int(gshow['acc_show'].sum())} แท่ง · "
+            f"260 แท่งล่าสุด: สะสม {int(gshow['acc_show'].sum())} · "
+            f"กระจาย {int(gshow['dist_show'].sum())} · "
             f"สควีซ {int(gshow['squeeze_on'].sum())} แท่ง — "
             "**จำนวนที่ขึ้นบ่อยไม่ได้แปลว่าใช้ได้** ยังไม่มีการทดสอบว่าแท่ง"
-            "เหล่านี้ให้ผลตอบแทนต่างจากแท่งอื่น (ทั้งบนทองและบนหุ้น)")
-        with st.expander("ทำไมไม่เอาไปใช้เข้าออร์เดอร์"):
+            "เหล่านี้ให้ผลตอบแทนต่างจากแท่งอื่น")
+        with st.expander("ทำไม footprint ถึงไม่ถูกเอาไปใช้เข้าออร์เดอร์"):
             st.markdown(
-                "- ต้นฉบับ v5.13 เขียนกำกับไว้เองว่า accumulation watch "
-                "**\"NEVER enters, exits, sizes or gates\"** — เกรด C\n"
-                "- ต้นฉบับยังระบุเองว่าเครื่องมือสาย OBV/AD หลักฐาน "
-                "weak/mixed, Wyckoff เป็น anecdotal และออร์เดอร์ VWAP/POV "
-                "ที่ทำดี ๆ **ตรวจไม่เจอ**\n"
-                "- ฝั่งสควีซ: ต้นฉบับปิด `useSqz` เป็นค่าตั้งต้นตั้งแต่ v5.8 "
-                "เพราะ edge หดเหลือ ~1 ใน 14 ตลาดดัชนีหลังปี 2001 "
-                "(Fang-Jacobsen-Qin, JPM 2017)\n"
-                "- บนทองคำเพิ่มอีกชั้น: วอลุ่มเป็น proxy ของ proxy และไม่มี"
-                "การทดสอบใด ๆ รองรับ")
+                "- ต้นฉบับ v4.1 เขียนกำกับเองว่า footprint "
+                "**\"NEVER enter, exit, size, or gate\"** และให้ **เกรด C**\n"
+                "- ต้นฉบับเลือกปิด `trustVol` เพราะบน CFD ทองคำ volume "
+                "คือจำนวน tick ไม่ใช่วอลุ่มจริง — เมื่อปิด เหลือโหวตราคาล้วน "
+                "2 ข้อ (ราคานิ่ง + CLV) และต้องผ่านทั้งคู่\n"
+                "- ฝั่ง squeeze: ต้นฉบับปิด `useSqzGate` เพราะระบุว่า edge "
+                "เดี่ยว ๆ decayed (ตรงกับข้อสรุปฝั่งหุ้น v5.13 ซึ่งอ้าง "
+                "Fang-Jacobsen-Qin, JPM 2017)\n"
+                "- ในแอปนี้ข้อมูลไม่ใช่ CFD: `GC=F` เป็นวอลุ่มฟิวเจอร์สจริง "
+                "แต่มี roll artifact · `PAXG-USD` เป็นวอลุ่มโทเคน — "
+                "**ทั้งคู่ยังไม่แนะนำให้เปิด trustVol**")
 
     st.markdown("#### Backtest (สัญญาณปิดแท่ง → เข้า open แท่งถัดไป, "
                 "หัก spread ทุกเทรด, แยกบัญชี swap"
@@ -1759,6 +1769,8 @@ def page_gold():
 
 
 def page_swing():
+    if not _guard(["set_swing", "accum"], "หน้า SET Swing"):
+        return
     st.subheader("SET Swing v5.13 + Market/Stock Context — คณิตเดียวกับ Pine")
     st.caption("พอร์ตจากสคริปต์ของคุณแบบ same math, same defaults (Long only, "
                "risk 0.5%, BOS 20, score≥55, stop 2 ATR → Chandelier 22/3, "
@@ -2051,6 +2063,8 @@ def C_accsq(period: str, tickers_key: tuple, bench_key: str,
 
 
 def page_set_accsq():
+    if not _guard(["set_swing", "accum"], "หน้าสแกน Accum+Squeeze"):
+        return
     st.caption("รายการเฝ้าดูจากสคริปต์ v5.13 — **ไม่ใช่สัญญาณซื้อ**: ต้นฉบับ"
                "ติดป้ายเองว่า accumulation watch เป็น *display only เกรด C* "
                "(\"NEVER enters, exits, sizes or gates\") และ squeeze edge "
@@ -2974,7 +2988,49 @@ MODULE_NEEDS = {
     "llm_providers": ("LP", ["VERSION", "PROVIDERS", "chat", "ORDER"]),
     "quant_evaluation": ("QE", ["VERSION", "gate_verdict", "cscv_pbo",
                                 "walk_forward_splits"]),
+    "accum": ("ACC", ["VERSION", "squeeze_frame", "accumulation_frame",
+                      "status_label", "audit_rows", "footprint_v641",
+                      "audit_rows_v641", "MARKER_NOTE"]),
+    "datastamp": ("DS", ["VERSION", "describe", "render", "bar_is_closed",
+                         "age_text", "staleness", "last_index", "fmt",
+                         "now_th"]),
+    "set_swing": ("SW", ["VERSION", "scan_acc_squeeze", "acc_audit",
+                         "ACC_SQ_BUCKETS", "BUCKETS_WITH_PINE_MARKER",
+                         "compute_frame", "state_today"]),
+    "gold": ("G", ["VERSION", "GOLD_VOL_NOTE", "TAPE_DISCLOSURE",
+                   "tape_frame", "tape_state", "compute_frame",
+                   "state_today", "backtest"]),
 }
+
+
+def _guard(mods: list[str], what: str) -> bool:
+    """ถ้าไฟล์บน repo ยังเป็นตัวเก่า -> บอกให้ชัดว่าไฟล์ไหน ขาดอะไร แล้วหยุด
+
+    เหตุผลที่ต้องมี: การอัปไฟล์ทีละหลายตัวผ่านเว็บ GitHub บางครั้ง
+    **ไฟล์ใหม่ถูกสร้างแต่ไฟล์เดิมไม่ถูกทับ** ทำให้ app.py ใหม่ไปเรียก
+    ฟังก์ชันที่โมดูลเก่ายังไม่มี แล้วได้ TypeError/AttributeError ที่อ่านไม่ออก
+    """
+    rep = _module_report(only=mods)
+    bad = [r for r in rep if not r["ok"]]
+    if not bad:
+        return True
+    st.error(f"**ไฟล์บน repo ยังเป็นเวอร์ชันเก่า — {what} ทำงานไม่ได้**  \n"
+             "อัปโหลดไฟล์ที่ระบุด้านล่างทับของเดิม แล้วกด **Reboot app**")
+    for r in bad:
+        st.write(f"- `{r['ไฟล์']}` · เวอร์ชันที่พบ: **{r['ver']}** · "
+                 f"ขาด: `{'`, `'.join(r['ขาด'][:8])}`")
+        st.caption(f"python โหลดมาจาก: `{r['path']}`")
+    st.info("เช็ก 3 อย่างถ้าอัปแล้วยังขึ้นข้อความนี้: (1) ดู path ด้านบน — "
+            "ถ้าไม่ใช่โฟลเดอร์ repo แปลว่ามีไฟล์ชื่อซ้ำบังอยู่ (2) ลบโฟลเดอร์ "
+            "`__pycache__` บน repo ทิ้ง (3) เปิดไฟล์บน GitHub แล้วดูบรรทัดบน ๆ "
+            "ว่ามีบรรทัด `VERSION = ...` ตรงกับที่ระบุใน README หรือยัง")
+    st.caption("ตารางสถานะทุกโมดูลที่ระบบเช็ก:")
+    st.dataframe(pd.DataFrame([
+        {"ไฟล์": r["ไฟล์"], "เวอร์ชัน": r["ver"],
+         "สถานะ": "✅ ครบ" if r["ok"] else "❌ ขาด " + ", ".join(r["ขาด"][:4]),
+         "โหลดจาก": r["path"]} for r in _module_report()]),
+        use_container_width=True, hide_index=True)
+    return False
 
 
 def _module_report(only: list[str] | None = None) -> list[dict]:
@@ -3302,7 +3358,7 @@ ROUTES = {
     "รายประเทศ (Bond)": page_g_countries,
     "Trend สินทรัพย์โลก": page_g_trend,
     "World Monitor": page_worldmonitor,
-    "ทองคำ XAU (RTP v6.4)": page_gold,
+    "ทองคำ XAU (RTP v6.4.1)": page_gold,
     "🥇 Gold Council": page_gold_council,
     "คริปโต (BTC/ETH)": page_crypto,
     "Trade Log & สถิติ": page_tradelog,
