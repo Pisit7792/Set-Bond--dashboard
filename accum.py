@@ -2,9 +2,11 @@
 """ACCUMULATION-FOOTPRINT WATCH + SQUEEZE — นิยาม "ชุดเดียว" ใช้ร่วมกันทั้ง
 หุ้นไทย (set_swing.py) และทองคำ (gold.py) เพื่อไม่ให้สองที่คำนวณเพี้ยนจากกัน.
 
-ที่มาของสูตร: SET Swing v5.13 (Pine) หัวข้อ
+ที่มาของสูตร: SET Swing v5.14 (Pine) หัวข้อ
   * "SQUEEZE PRECONDITION (TTM-style)"       บรรทัด ~1193-1201
   * "ACCUMULATION-FOOTPRINT WATCH (v5.8)"    บรรทัด ~1508-1542
+  * "DISTRIBUTION / RELEASE WATCH (v5.14 F1)" — กระจกเงาของ accumulation
+    ใช้ input ชุดเดียวกัน (accLen/accFlat/accRatio) ตามที่ต้นฉบับตั้งใจ
 
 ป้ายกำกับของ "ต้นฉบับเอง" (ยกมาตรง ๆ ไม่ตกแต่ง ไม่ขยายความ):
   * accumulation watch = **DISPLAY ONLY, grade C proxy**
@@ -24,7 +26,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-VERSION = "1.1"         # 1.1 = เพิ่ม footprint แบบ v6.4.1 (distribution + trust_vol)
+VERSION = "1.2"         # 1.2 = เพิ่ม distribution watch ฝั่งหุ้น (Pine v5.14 F1)
 
 # --------------------------------------------------------------------------
 # ค่าตั้งต้น = ตรงกับ input ของ Pine v5.13 หัวข้อ 18
@@ -35,6 +37,8 @@ ACC_RATIO_DEF = 1.25      # accRatio — Min up-vol / down-vol ratio
 ACC_CLV_THR = 0.10        # ค่าคงที่ในสคริปต์ (ไม่ใช่ input)
 ACC_ACT_THR = 0.7         # ค่าคงที่ในสคริปต์ (ไม่ใช่ input)
 ACC_POS_MAX = 0.65        # ค่าคงที่ในสคริปต์ (ไม่ใช่ input)
+DIST_CLV_THR = -0.10      # v5.14 F1 — กระจกเงาของ ACC_CLV_THR
+DIST_POS_MIN = 0.35       # v5.14 F1 — กระจกเงาของ ACC_POS_MAX
 ACC_VOTES_MIN = 3         # ต้อง >= 3 จาก 4
 ACC_PERSIST = 2           # ต้องติดกันกี่แท่งจึงพิมพ์เครื่องหมาย (accShow)
 VOL_BASE_LEN = 100        # len100Eff — ฐานวอลุ่มเทียบ
@@ -46,9 +50,16 @@ VOTE_NAMES = ["ราคานิ่ง", "วอลุ่มขาซื้อ�
 VOTE_KEYS = ["acc_flat_ok", "acc_press_ok", "acc_clv_ok", "acc_act_ok"]
 VOTE_NEEDS_VOLUME = [False, True, False, True]   # โหวตข้อ 2 และ 4 ใช้วอลุ่ม
 
+# v5.14 F1 — ฝั่ง distribution ใช้ "ราคานิ่ง" และ "ตลาดไม่ตาย" ร่วมกับฝั่งสะสม
+# (โหวตข้อ 1 และ 4 เหมือนกันเป๊ะ) ต่างกันแค่ข้อ 2 และ 3 ที่กลับด้าน
+DIST_VOTE_NAMES = ["ราคานิ่ง", "วอลุ่มขาขายเด่น", "ปิดค่อนล่าง", "ตลาดไม่ตาย"]
+DIST_VOTE_KEYS = ["dist_flat_ok", "dist_press_ok", "dist_clv_ok", "dist_act_ok"]
+
 MARKER_NOTE = (
     "เครื่องหมายบนชาร์ต Pine: สี่เหลี่ยมเหลืองแถวล่าง = accShow "
     "(โหวต ≥3/4 ติดกัน 2 แท่ง + อยู่ใต้ trigger + ครึ่งล่างของกรอบ) · "
+    "สี่เหลี่ยมแดงแถวบน = distShow (v5.14 กระจกเงา: โหวต ≥3/4 ติดกัน 2 แท่ง "
+    "+ อยู่เหนือ breakdown + ครึ่งบนของกรอบ) · "
     "วงกลมฟ้าแถวล่าง = squeezeOn (แท่งที่บีบตัวอยู่จริง ๆ เท่านั้น)"
 )
 
@@ -102,7 +113,9 @@ def accumulation_frame(df: pd.DataFrame, atr: pd.Series, swing_hi: pd.Series,
                        acc_flat: float = ACC_FLAT_DEF,
                        acc_ratio: float = ACC_RATIO_DEF,
                        vol_base_len: int = VOL_BASE_LEN,
-                       use_acc: bool = True) -> pd.DataFrame:
+                       use_acc: bool = True,
+                       swing_lo: pd.Series | None = None,
+                       use_dist: bool = True) -> pd.DataFrame:
     """โหวต 4 ข้อของ accumulation-footprint watch — ตรงตาม Pine v5.13.
 
     1) ราคานิ่ง      |close - close[accLen]| <= accFlat * ATR
@@ -112,6 +125,21 @@ def accumulation_frame(df: pd.DataFrame, atr: pd.Series, swing_hi: pd.Series,
     บริบท (accCtx)   close < swingHi  และ  posInRng <= 0.65
     accHot  = use_acc และ ctx และ โหวต >= 3
     accShow = accHot ติดกัน 2 แท่ง  ← ตัวนี้คือสี่เหลี่ยมเหลืองบนชาร์ต
+
+    v5.14 F1 — ฝั่ง distribution (กระจกเงาเป๊ะ ใช้ input ชุดเดียวกัน):
+    1) ราคานิ่ง       เงื่อนไขเดียวกับฝั่งสะสม (dist_flat_ok = acc_flat_ok)
+    2) วอลุ่มขาขายเด่น sum(vol วันลบ) >= accRatio * sum(vol วันบวก) และวันบวก > 0
+    3) ปิดค่อนล่าง     sma(CLV, accLen) <= -0.10
+    4) ตลาดไม่ตาย     เงื่อนไขเดียวกับฝั่งสะสม (dist_act_ok = acc_act_ok)
+    บริบท (distCtx)  close > swingLo  และ  posInRng >= 0.35
+    distShow = distHot ติดกัน 2 แท่ง ← สี่เหลี่ยมแดงแถวบนบนชาร์ต
+
+    ป้ายกำกับเดียวกับฝั่งสะสม: **DISPLAY ONLY, grade C** — ต้นฉบับ v5.14 ระบุเอง
+    ว่า Wyckoff distribution "plausible mechanism, unproven as a signal" และ
+    ออร์เดอร์ VWAP/POV ที่รันดี ๆ ตรวจไม่เจอจาก OHLCV เลย → "ไม่มีเครื่องหมาย"
+    ไม่ได้แปลว่าไม่มีใครขาย
+
+    swing_lo=None -> ไม่คำนวณฝั่ง distribution (คืนคอลัมน์ dist_* เป็น False/0)
     """
     c, h, l = df["Close"], df["High"], df["Low"]
     v = df["Volume"] if "Volume" in df.columns \
@@ -141,9 +169,26 @@ def accumulation_frame(df: pd.DataFrame, atr: pd.Series, swing_hi: pd.Series,
     out["acc_hot"] = bool(use_acc) & ctx & (out["acc_votes"] >= ACC_VOTES_MIN)
     out["acc_show"] = out["acc_hot"] & out["acc_hot"].shift(1).fillna(False)
 
+    # --- v5.14 F1: DISTRIBUTION / RELEASE WATCH (กระจกเงา, DISPLAY ONLY) ---
+    out["dist_flat_ok"] = out["acc_flat_ok"]          # ข้อ 1 ใช้ร่วมกัน
+    out["dist_act_ok"] = out["acc_act_ok"]            # ข้อ 4 ใช้ร่วมกัน
+    out["dist_press_ok"] = ((up_vol > 0)
+                            & (dn_vol >= acc_ratio * up_vol)).fillna(False)
+    out["dist_clv_ok"] = (clv_avg <= DIST_CLV_THR).fillna(False)
+    out["dist_votes"] = sum(out[k].astype(int) for k in DIST_VOTE_KEYS)
+    if swing_lo is None:
+        d_ctx = pd.Series(False, index=df.index)
+    else:
+        d_ctx = ((c > swing_lo)
+                 & (out["pos_in_rng"] >= DIST_POS_MIN)).fillna(False)
+    out["dist_ctx"] = d_ctx
+    out["dist_hot"] = bool(use_dist) & d_ctx & (out["dist_votes"] >= ACC_VOTES_MIN)
+    out["dist_show"] = out["dist_hot"] & out["dist_hot"].shift(1).fillna(False)
+
     # ค่าดิบไว้ตรวจสอบบนจอ (ไม่ได้ใช้ตัดสินใจ — ใช้ให้ผู้ใช้เทียบกับ TradingView ได้)
     out["_net_move_atr"] = (c - c.shift(acc_len)).abs() / atr.replace(0, np.nan)
     out["_updn_ratio"] = up_vol / dn_vol.replace(0, np.nan)
+    out["_dnup_ratio"] = dn_vol / up_vol.replace(0, np.nan)
     out["_clv_avg"] = clv_avg
     out["_vol_act"] = vol_act
     out["vol_quality"] = volume_quality(v, vol_base_len)
@@ -162,9 +207,11 @@ def acc_squeeze(df: pd.DataFrame, acc_len: int = ACC_LEN_DEF,
     """
     atr = atr_wilder(df, atr_len)
     swing_hi = df["High"].shift(1).rolling(bos_len).max()
+    swing_lo = df["Low"].shift(1).rolling(bos_len).min()
     out = accumulation_frame(df, atr, swing_hi, acc_len, acc_flat, acc_ratio,
-                             vol_base_len, use_acc)
+                             vol_base_len, use_acc, swing_lo=swing_lo)
     out["swing_hi"] = swing_hi
+    out["swing_lo"] = swing_lo
     out["atr"] = atr
     keep = [c for c in ["Open", "High", "Low", "Close", "Volume"]
             if c in df.columns]
@@ -217,6 +264,65 @@ def audit_rows(fr: pd.DataFrame, i: int = -1, acc_len: int = ACC_LEN_DEF,
     return rows
 
 
+def dist_audit_rows(fr: pd.DataFrame, i: int = -1, acc_len: int = ACC_LEN_DEF,
+                    acc_flat: float = ACC_FLAT_DEF,
+                    acc_ratio: float = ACC_RATIO_DEF,
+                    vol_ok: bool = True) -> list[dict]:
+    """ตารางตรวจฝั่ง distribution (v5.14 F1) — กระจกเงาของ audit_rows.
+
+    ใช้เกณฑ์ชุดเดียวกับฝั่งสะสม (acc_flat / acc_ratio) ตามที่ Pine v5.14
+    ตั้งใจ: ไม่เพิ่มปุ่มชุดที่สองให้ตัวชี้วัดเกรด C
+    """
+    r = fr.iloc[i]
+
+    def num(x, nd=2, suf=""):
+        try:
+            xf = float(x)
+        except (TypeError, ValueError):
+            return "—"
+        return "—" if xf != xf else f"{xf:.{nd}f}{suf}"
+
+    rows = [
+        {"ข้อ": "1) ราคานิ่ง", "ค่าที่วัดได้": num(r.get("_net_move_atr"), 2, " ATR"),
+         "เกณฑ์": f"≤ {acc_flat} ATR (ข้อเดียวกับฝั่งสะสม)",
+         "ผ่าน": bool(r.get("dist_flat_ok", False)), "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "2) วอลุ่มขาขายเด่น", "ค่าที่วัดได้": num(r.get("_dnup_ratio"), 2, "×"),
+         "เกณฑ์": f"≥ {acc_ratio}× (และวันบวกต้อง > 0)",
+         "ผ่าน": bool(r.get("dist_press_ok", False)), "ใช้วอลุ่ม": "ใช่"},
+        {"ข้อ": "3) ปิดค่อนล่าง (CLV)", "ค่าที่วัดได้": num(r.get("_clv_avg"), 3),
+         "เกณฑ์": f"≤ {DIST_CLV_THR}", "ผ่าน": bool(r.get("dist_clv_ok", False)),
+         "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "4) ตลาดไม่ตาย", "ค่าที่วัดได้": num(r.get("_vol_act"), 2, "×"),
+         "เกณฑ์": f"≥ {ACC_ACT_THR}× ฐาน {VOL_BASE_LEN} แท่ง (ข้อเดียวกับฝั่งสะสม)",
+         "ผ่าน": bool(r.get("dist_act_ok", False)), "ใช้วอลุ่ม": "ใช่"},
+        {"ข้อ": "บริบท: อยู่เหนือ breakdown", "ค่าที่วัดได้": num(r.get("swing_lo"), 2),
+         "เกณฑ์": f"close {num(r.get('Close'), 2)} ต้องสูงกว่า",
+         "ผ่าน": bool(r.get("Close", np.nan) > r.get("swing_lo", np.nan)),
+         "ใช้วอลุ่ม": "ไม่"},
+        {"ข้อ": "บริบท: ครึ่งบนของกรอบ",
+         "ค่าที่วัดได้": num(float(r.get("pos_in_rng", np.nan)) * 100, 0, "%"),
+         "เกณฑ์": f"≥ {DIST_POS_MIN * 100:.0f}%",
+         "ผ่าน": bool(r.get("pos_in_rng", 0.0) >= DIST_POS_MIN), "ใช้วอลุ่ม": "ไม่"},
+    ]
+    if not vol_ok:
+        for k in (1, 3):
+            rows[k]["ผ่าน"] = None
+            rows[k]["ค่าที่วัดได้"] = "วัดไม่ได้ (วอลุ่มไม่น่าเชื่อถือ)"
+    return rows
+
+
+def dist_label(dist_show: bool, dist_hot: bool) -> tuple[str, bool]:
+    """ป้ายฝั่ง distribution + มีเครื่องหมายบนชาร์ต Pine v5.14 หรือไม่.
+
+    มีแค่ dist_show เท่านั้นที่มีสี่เหลี่ยมแดงจริงบนชาร์ต
+    """
+    if dist_show:
+        return "🔴 กระจายของ (footprint)", True
+    if dist_hot:
+        return "◻️ กระจายแท่งแรก (ยังไม่ครบ 2 แท่ง)", False
+    return "—", False
+
+
 def votes_measurable(vol_ok: bool) -> int:
     """จำนวนโหวตที่ 'วัดได้จริง' — 4 ถ้ามีวอลุ่มใช้ได้, 2 ถ้าไม่มี."""
     return 4 if vol_ok else 2
@@ -263,8 +369,7 @@ def status_label(acc_show: bool, acc_hot: bool, sq_on: bool,
 # ค่าตั้งต้นของต้นฉบับคือ **ปิด** ("edge decayed") ที่นี่จึงปิดตามเป๊ะ
 # ---------------------------------------------------------------------------
 
-DIST_CLV_THR = -0.10
-DIST_POS_MIN = 0.35
+# DIST_CLV_THR / DIST_POS_MIN ประกาศไว้ด้านบน (ใช้ร่วมกับ v5.14 ฝั่งหุ้น)
 
 VOTE_NAMES_V641 = ["ราคานิ่ง (ราคาล้วน)", "ปิดค่อนบน/ล่าง CLV (ราคาล้วน)",
                    "วอลุ่มฝั่งเด่น (ใช้วอลุ่ม)", "ตลาดไม่ตาย (ใช้วอลุ่ม)"]

@@ -1,14 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-set_swing.py — พอร์ต SET SWING TREND-REGIME BREAKOUT v5.13 (Daily)
+set_swing.py — พอร์ต SET SWING TREND-REGIME BREAKOUT v5.14 (Daily)
 
 ซื่อตรงต่อต้นฉบับ:
-- ค่าตั้งต้นทุกตัว = Pine v5.13 (ซึ่งต้นฉบับยืนยันว่า default = v5.11 เป๊ะ):
+- ค่าตั้งต้นทุกตัว = Pine v5.14 (ซึ่งต้นฉบับยืนยันว่า default = v5.11 เป๊ะ):
   Long only, risk 0.5%, SMA200+ดัชนี gate, BOS 20, score≥55, vol-shock 90,
   ceiling 30/5, gap 1.5 ATR, stop 2 ATR, chandelier 22/3, TP1 OFF, tick-round ON,
   VT>80th, DD cut 10%→×0.5, แพ้ติด≥2→×0.6, beta>1.3 trim, kill 6%/แพ้ติด 5,
   เพดาน 6 เทรด/เดือน, โปรไฟล์ SET100 ON, board lot อัตโนมัติ 50/100
-- v5.13 ที่ port รอบนี้ (ทั้งหมด default OFF/แสดงผลเท่านั้น = พฤติกรรมเดิม):
+- v5.14 ที่ port รอบนี้ (F1 แสดงผลอย่างเดียว, F2/F3 ปิดเป็นค่าตั้งต้น
+  → ออร์เดอร์เท่ากับ v5.13 ทุกประการ):
+  * F1 DISTRIBUTION / RELEASE WATCH — กระจกเงาของ accumulation watch ใช้ input
+    ชุดเดียวกัน (accLen/accFlat/accRatio) ป้ายกำกับของต้นฉบับ: **DISPLAY ONLY,
+    grade C** — Wyckoff distribution "plausible mechanism, unproven as a signal",
+    VSA mixed-to-weak, OBV/CMF/AD weak, SMC/ICT unfalsifiable และที่สำคัญที่สุด
+    **ออร์เดอร์ VWAP/POV ที่รันดี ๆ ตรวจไม่เจอจาก OHLCV** → "ไม่มีเครื่องหมาย"
+    ไม่เท่ากับ "ไม่มีคนขาย"
+  * F2 size reducer (ปิด) — ลดขนาดไม้ใหม่เมื่อ watch ฝั่งตรงข้ามติด ลดอย่างเดียว
+  * F3 trail tightening (ปิด) — บีบ Chandelier ตอนถือ long แล้ว distribution ติด
+    stop แรกไม่ถูกแตะ (FROZEN-R เดิม), บีบแล้วคลายไม่ได้จนจบไม้, และมี guard
+    สองด้าน: ห่างราคา dist_gap×ATR และไม่หลวมกว่า Chandelier ปกติของ v5.13
+- v5.13 ที่ port ไว้ก่อนหน้า (ทั้งหมด default OFF/แสดงผลเท่านั้น = พฤติกรรมเดิม):
   * SQUEEZE precondition (TTM: BB20 ใน KC20) — ต้นฉบับ **ปิด default ตั้งแต่ v5.8**
     เพราะ "edge decayed post-2001" (อ้าง Fang-Jacobsen-Qin, JPM 2017) — เปิดได้
     แต่คำเตือนนั้นติดไปด้วย
@@ -37,7 +49,7 @@ import engine as E
 import gold as G
 import accum as ACC
 
-VERSION = "v5.13-r14"   # r14 = ย้ายสูตรไป accum.py + scan closed_only + acc_audit
+VERSION = "v5.14-r15"   # r15 = distribution watch (F1) + F2/F3 ปิดเป็นค่าตั้งต้น
 from profile_data import PROFILE
 from set_context import zsc
 
@@ -53,6 +65,29 @@ def rnd_set(p: float) -> float:
         return p
     t = set_tick(p)
     return round(round(p / t) * t, 2)
+
+
+def dist_chand(extreme: float, atr_i: float, close_i: float, tr_mlt: float,
+               tr_m: float, gap: float, long_side: bool = True) -> float:
+    """v5.14 F3 — Chandelier ที่ถูกบีบ + guard สองด้าน (สูตรเดียวกับ Pine)
+
+    long:  max( base , min( tgt , close - gap×ATR ) )
+    short: min( base , max( tgt , close + gap×ATR ) )
+      base = Chandelier ปกติของ v5.13 (ตัวคูณ tr_mlt)
+      tgt  = Chandelier ที่บีบแล้ว (ตัวคูณ tr_mlt × tr_m, tr_m ≤ 1)
+
+    ผลที่รับประกันได้ (ทดสอบใน test_v514.py):
+      1) base ≤ ผลลัพธ์ ≤ tgt  → บีบได้ แต่ไม่มีทางหลวมกว่า v5.13
+      2) ถ้าผลลัพธ์อยู่เหนือราคา (long) แปลว่า base เองก็อยู่เหนือราคาอยู่แล้ว
+         → ไม่ได้เกิดจากการบีบ (v5.13 ก็จะออกไม้นั้นเหมือนกัน)
+    """
+    if long_side:
+        base = extreme - atr_i * tr_mlt
+        tgt = extreme - atr_i * tr_mlt * tr_m
+        return max(base, min(tgt, close_i - gap * atr_i))
+    base = extreme + atr_i * tr_mlt
+    tgt = extreme + atr_i * tr_mlt * tr_m
+    return min(base, max(tgt, close_i + gap * atr_i))
 
 
 @dataclass
@@ -116,6 +151,14 @@ class SwingParams:
     acc_len: int = 20
     acc_flat: float = 2.0
     acc_ratio: float = 1.25
+    # --- v5.14: distribution / release watch (DISPLAY ONLY, grade C) ---
+    #     ใช้ acc_len / acc_flat / acc_ratio ร่วมกับฝั่งสะสม (ตามต้นฉบับ)
+    use_dist: bool = True             # F1 — แสดงผลอย่างเดียว
+    use_dist_size: bool = False       # F2 — ลดขนาดไม้ใหม่ (ปิด)
+    dist_cut: float = 0.8
+    use_dist_trail: bool = False      # F3 — บีบ trail (ปิด)
+    dist_tr_m: float = 0.75
+    dist_gap: float = 0.25
     # --- v5.13: pullback-location entry (OFF = breakout v5.11 เป๊ะ) ---
     entry_mode: str = "Breakout"      # "Breakout" | "Pullback"
     pb_band: str = "Full"             # "Core" | "Deep" | "Full" | "Custom"
@@ -182,13 +225,17 @@ def compute_frame(df: pd.DataFrame, bench_close=None, ticker: str = "",
 
     # --- v5.13: ACCUMULATION-FOOTPRINT WATCH — ต้นฉบับติดป้าย DISPLAY ONLY
     #     grade C proxy ("NEVER enters, exits, sizes or gates") — ที่นี่เช่นกัน
+    #     v5.14 F1: เพิ่มฝั่ง distribution (กระจกเงา) — ป้ายกำกับเดียวกันเป๊ะ
     _acc = ACC.accumulation_frame(fr, atrv, swing_hi, acc_len=p.acc_len,
                                   acc_flat=p.acc_flat, acc_ratio=p.acc_ratio,
-                                  use_acc=p.use_acc)
+                                  use_acc=p.use_acc, swing_lo=swing_lo,
+                                  use_dist=p.use_dist)
     for _k in ["pos_in_rng", "acc_flat_ok", "acc_press_ok", "acc_clv_ok",
                "acc_act_ok", "acc_votes", "acc_ctx", "acc_hot", "acc_show",
-               "_net_move_atr", "_updn_ratio", "_clv_avg", "_vol_act",
-               "vol_quality"]:
+               "dist_flat_ok", "dist_press_ok", "dist_clv_ok", "dist_act_ok",
+               "dist_votes", "dist_ctx", "dist_hot", "dist_show",
+               "_net_move_atr", "_updn_ratio", "_dnup_ratio", "_clv_avg",
+               "_vol_act", "vol_quality"]:
         fr[_k] = _acc[_k]
 
     er_num = (c - c.shift(p.er_len)).abs()
@@ -407,7 +454,17 @@ def size_mult_at(fr: pd.DataFrame, i: int, p: SwingParams, dd_pct: float,
     bv = fr["beta"].iloc[i]
     bt = 1.0 if (not p.use_beta or bv != bv or bv <= p.beta_hi) \
         else max(0.5, p.beta_hi / bv)
-    return max(0.2, vt * dd * ls * bt)
+    # --- v5.14 F2 (ปิดเป็นค่าตั้งต้น): ลดขนาดเมื่อ footprint ฝั่งตรงข้ามติด ---
+    #     regime UP + distribution ติด -> ลดไม้ LONG ใหม่
+    #     regime DOWN + accumulation ติด -> ลดไม้ SHORT ใหม่
+    #     ลดอย่างเดียว ไม่เคยเพิ่ม ปิดอยู่ = 1.0 (ผลเท่า v5.13 เป๊ะ)
+    dt = 1.0
+    if p.use_dist_size and "dist_show" in fr.columns:
+        opp = ((bool(fr["regime_up"].iloc[i]) and bool(fr["dist_show"].iloc[i]))
+               or (bool(fr["regime_dn"].iloc[i]) and bool(fr["acc_show"].iloc[i])))
+        if opp:
+            dt = float(p.dist_cut)
+    return max(0.2, vt * dd * ls * bt * dt)
 
 
 def state_today(fr: pd.DataFrame, p: SwingParams, equity: float = 1_000_000.0) -> dict:
@@ -459,7 +516,24 @@ def state_today(fr: pd.DataFrame, p: SwingParams, equity: float = 1_000_000.0) -
         ck.append(("PB entry (v5.13)",
                    side != 0 or bool(r["pb_conf_l"] or r["pb_conf_s"]), pb_txt))
     trig = bool(r["long_cond"] or r["short_cond"])
-    return {"regime": reg, "triggered": trig, "checklist": ck,
+    # --- v5.14 F1: สถานะ distribution — แยกออกจาก checklist โดยตั้งใจ
+    #     เพราะมัน "ไม่ปิดกั้นการเข้า" การเอาไปปนกับเงื่อนไขเข้าจะทำให้เข้าใจผิด
+    dvotes = int(r["dist_votes"]) if "dist_votes" in fr.columns else 0
+    dist = {
+        "on": bool(p.use_dist),
+        "votes": dvotes,
+        "hot": bool(r.get("dist_hot", False)),
+        "show": bool(r.get("dist_show", False)),
+        "pass_names": [n for n, k in zip(ACC.DIST_VOTE_NAMES, ACC.DIST_VOTE_KEYS)
+                       if bool(r.get(k, False))],
+        "size_trim": bool(p.use_dist_size
+                          and ((reg == "UP" and bool(r.get("dist_show", False)))
+                               or (reg == "DOWN" and bool(r.get("acc_show", False))))),
+        "trail_on": bool(p.use_dist_trail),
+        "pine_dash": (("RELEASE " if bool(r.get("dist_show", False)) else "")
+                      + f"{dvotes}/4"),
+    }
+    return {"regime": reg, "triggered": trig, "checklist": ck, "dist": dist,
             "sl_dist": round(sl, 2), "lot": lot, "size_mult": round(sm, 2),
             "board_qty": board,
             "entry_note": ("เงื่อนไขครบเมื่อปิดแท่งล่าสุด — ตามกติกา เข้า "
@@ -484,6 +558,11 @@ def backtest(fr: pd.DataFrame, p: SwingParams = None,
     volrk = fr["vol_rank"].to_numpy(float)
     liqv = fr["liq_val"].to_numpy(float)
     lots = fr["lot"].to_numpy(int)
+    # v5.14 F3 — ใช้ตอนบีบ trail เท่านั้น (ปิดเป็นค่าตั้งต้น)
+    d_show = (fr["dist_show"].to_numpy(bool) if "dist_show" in fr.columns
+              else np.zeros(len(fr), dtype=bool))
+    a_show = (fr["acc_show"].to_numpy(bool) if "acc_show" in fr.columns
+              else np.zeros(len(fr), dtype=bool))
     idx = fr.index
     month = idx.to_period("M")
     cost_side = (p.comm_side * 1.07 + 0.007 + p.spread_e) / 100.0
@@ -512,7 +591,12 @@ def backtest(fr: pd.DataFrame, p: SwingParams = None,
             m_trades = 0
         if pos != 0:
             if pos > 0:
-                chand = np.nanmax(h[max(0, i - p.tr_len + 1):i + 1]) - atr[i] * p.tr_mlt
+                _hh = np.nanmax(h[max(0, i - p.tr_len + 1):i + 1])
+                # guard สองด้าน (ตรงตาม Pine v5.14) อยู่ใน dist_chand()
+                chand = (dist_chand(_hh, atr[i], c[i], p.tr_mlt, p.dist_tr_m,
+                                    p.dist_gap, True)
+                         if (p.use_dist_trail and d_show[i])
+                         else _hh - atr[i] * p.tr_mlt)
                 base = entry_px - riskR
                 t_new = max(base, chand)
                 trail = t_new if trail != trail else max(trail, t_new)
@@ -530,7 +614,11 @@ def backtest(fr: pd.DataFrame, p: SwingParams = None,
                 px = o[i] if o[i] < stop else stop
                 reg_exit = p.use_reg_exit and c[i] < sma_r[i]
             else:
-                chand = np.nanmin(l[max(0, i - p.tr_len + 1):i + 1]) + atr[i] * p.tr_mlt
+                _ll = np.nanmin(l[max(0, i - p.tr_len + 1):i + 1])
+                chand = (dist_chand(_ll, atr[i], c[i], p.tr_mlt, p.dist_tr_m,
+                                    p.dist_gap, False)
+                         if (p.use_dist_trail and a_show[i])
+                         else _ll + atr[i] * p.tr_mlt)
                 base = entry_px + riskR
                 t_new = min(base, chand)
                 trail = t_new if trail != trail else min(trail, t_new)
@@ -696,6 +784,10 @@ def scan_acc_squeeze(prices: dict, bench_close, p: SwingParams = None,
                      last_closed_date=None) -> pd.DataFrame:
     """สถานะสะสม/สควีซ ณ แท่งล่าสุดของทุกตัวใน universe.
 
+    v5.14: เพิ่มคอลัมน์ฝั่ง distribution (กระจายของ) — ป้ายกำกับเดียวกันเป๊ะ
+    คือ DISPLAY ONLY เกรด C และ "ไม่มีเครื่องหมาย" ไม่ได้แปลว่าไม่มีคนขาย
+    เพราะออร์เดอร์ VWAP/POV ที่รันดี ๆ ตรวจไม่เจอจาก OHLCV
+
     ความซื่อสัตย์ (คำของต้นฉบับเอง): accumulation watch = DISPLAY ONLY,
     grade C proxy, "NEVER enters, exits, sizes or gates" และ squeeze edge
     "decayed post-2001" (เหตุที่ต้นฉบับปิด useSqz ตั้งแต่ v5.8) —
@@ -726,6 +818,8 @@ def scan_acc_squeeze(prices: dict, bench_close, p: SwingParams = None,
             if bucket == "—":
                 continue
             votes = [n for n, k in zip(ACC.VOTE_NAMES, ACC.VOTE_KEYS) if r[k]]
+            d_lbl, _d_on = ACC.dist_label(bool(r["dist_show"]),
+                                          bool(r["dist_hot"]))
             reg = "UP" if r["regime_up"] else ("DOWN" if r["regime_dn"] else "FLAT")
             atr_ok = r["atr"] == r["atr"] and r["atr"] > 0
             dist = (r["swing_hi"] - r["Close"]) / r["atr"] if atr_ok \
@@ -735,6 +829,8 @@ def scan_acc_squeeze(prices: dict, bench_close, p: SwingParams = None,
                 "มีเครื่องหมายบนชาร์ต": "ใช่" if on_chart else "ไม่ (ของหน้านี้เอง)",
                 "โหวตสะสม": f"{int(r['acc_votes'])}/4",
                 "องค์ประกอบที่ผ่าน": " + ".join(votes) if votes else "—",
+                "กระจายของ (v5.14)": d_lbl,
+                "โหวตกระจาย": f"{int(r['dist_votes'])}/4",
                 "สควีซ": ("ON" if sq_on else
                           (f"คลาย {int(b_sq)} แท่ง" if b_sq == b_sq else "—")),
                 "ตำแหน่งในกรอบ": (f"{float(r['pos_in_rng']) * 100:.0f}%"
@@ -782,4 +878,12 @@ def acc_audit(df: pd.DataFrame, bench_close=None, ticker: str = "",
         "bars_sq": (None if r["bars_sq"] != r["bars_sq"] else int(r["bars_sq"])),
         "pine_dash": ("WATCH " if bool(r["acc_show"]) else "")
                      + f"{int(r['acc_votes'])}/4",
+        # --- v5.14 F1: ฝั่ง distribution (แถว "Distrib (release)" บน Pine) ---
+        "dist_rows": ACC.dist_audit_rows(fr, -1, p.acc_len, p.acc_flat,
+                                         p.acc_ratio),
+        "dist_votes": int(r["dist_votes"]),
+        "dist_hot": bool(r["dist_hot"]),
+        "dist_show": bool(r["dist_show"]),
+        "dist_pine_dash": ("RELEASE " if bool(r["dist_show"]) else "")
+                          + f"{int(r['dist_votes'])}/4",
     }

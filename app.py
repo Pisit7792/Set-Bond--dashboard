@@ -1771,14 +1771,17 @@ def page_gold():
 def page_swing():
     if not _guard(["set_swing", "accum"], "หน้า SET Swing"):
         return
-    st.subheader("SET Swing v5.13 + Market/Stock Context — คณิตเดียวกับ Pine")
+    st.subheader("SET Swing v5.14 + Market/Stock Context — คณิตเดียวกับ Pine")
     st.caption("พอร์ตจากสคริปต์ของคุณแบบ same math, same defaults (Long only, "
                "risk 0.5%, BOS 20, score≥55, stop 2 ATR → Chandelier 22/3, "
                "TP1 OFF, kill 6%/แพ้ติด 5, เพดาน 6 เทรด/เดือน, โปรไฟล์ SET100 "
                "ทางการ H2-2026) | v5.13 port แล้ว: squeeze precondition (default "
                "OFF — ต้นฉบับปิดเองตั้งแต่ v5.8 เหตุ edge decayed post-2001), "
                "accumulation watch (display only เกรด C), PB entry (default OFF "
-               "= breakout เดิมเป๊ะ) | ที่ยังไม่ port: flow/FX/event/skew/HTF/"
+               "= breakout เดิมเป๊ะ) | **v5.14 ใหม่**: distribution/release watch "
+               "(กระจกเงาของ accumulation — display only เกรด C เหมือนกัน) + "
+               "F2 ลดไซส์/F3 บีบ trail ซึ่ง**ปิดทั้งคู่** จึงยังได้ออร์เดอร์เท่า "
+               "v5.13 เป๊ะ | ที่ยังไม่ port: flow/FX/event/skew/HTF/"
                "ER-gate/breadth ฯลฯ (ต้นฉบับก็ปิด)")
     mc = CX.market_context(bench_close,
                            vix_close=CTX_VIX, usdthb_close=thb_close,
@@ -1837,9 +1840,9 @@ def page_swing():
         [{"": lvmap[lv], "รายการ": a, "ค่า": b} for a, b, lv in sc["rows"]]),
         hide_index=True, height=420)
     st.divider()
-    st.markdown("#### สถานะกลยุทธ์ Swing v5.13 (วันนี้)")
+    st.markdown("#### สถานะกลยุทธ์ Swing v5.14 (วันนี้)")
     eqty = st.number_input("ทุนจำลอง (บาท)", 10000.0, 1e9, 1_000_000.0, 50000.0)
-    with st.expander("⚙️ ตัวเลือก v5.13 (ค่าตั้งต้น = พฤติกรรม v5.11 เป๊ะ)"):
+    with st.expander("⚙️ ตัวเลือก v5.13/v5.14 (ค่าตั้งต้น = พฤติกรรม v5.11 เป๊ะ)"):
         e1, e2, e3 = st.columns(3)
         emode = e1.selectbox("Entry trigger",
                              ["Breakout (default)", "Pullback to zone (PB)"], 0)
@@ -1857,12 +1860,26 @@ def page_swing():
                        "ที่มีหลักฐาน — เลเวล fib ไม่พยากรณ์อะไร และเลกที่แรงสุด"
                        "มักไม่ย่อ (จะพลาด breakout ที่ดีที่สุดบางตัว) — "
                        "เทียบสองโหมดผ่าน backtest ก่อนเชื่อ")
+        st.markdown("**v5.14 — distribution / release (ทั้งคู่ปิดเป็นค่าตั้งต้น)**")
+        e6, e7 = st.columns(2)
+        f2on = e6.checkbox("F2: ลดขนาดไม้ใหม่เมื่อ footprint ฝั่งตรงข้ามติด "
+                           "(ลดอย่างเดียว)", False)
+        f3on = e7.checkbox("F3: บีบ Chandelier trail เมื่อ distribution ติด "
+                           "(ตอนถือ long)", False)
+        if f2on or f3on:
+            st.caption("⚠️ เปิดแล้ว backtest จะ**ไม่เท่า v5.13** อีกต่อไป — ต้อง "
+                       "เทียบเป็น arm แยกกัน (อย่าเปิดพร้อมกันตอนทดสอบ) หัก"
+                       "ต้นทุนไป-กลับ ~0.5% แล้วดู net/trade กับ DSR · "
+                       "F3 บีบแล้วคลายไม่ได้จนจบไม้ (trail เป็น running max) และ"
+                       "เอนจินนี้กินกำไรจากหางขวาของเทรนด์ ตัวช่วยออกทุกชนิด"
+                       "ตัดหางขวาทิ้ง — ถ้าผลแย่ลง คำตอบที่ถูกคือปิดทิ้ง")
     swp = SW.SwingParams(
         surv_flag=surv,
         entry_mode="Pullback" if emode.startswith("Pull") else "Breakout",
         pb_band=("Core" if pband.startswith("Core") else
                  "Deep" if pband.startswith("Deep") else "Full"),
-        pb_win=int(pwin), pb_kill=float(pkill), use_sqz=usesq)
+        pb_win=int(pwin), pb_kill=float(pkill), use_sqz=usesq,
+        use_dist_size=bool(f2on), use_dist_trail=bool(f3on))
     fr = SW.compute_frame(set_prices[pick], bench_close, tkr, swp, blk_dates)
     stt = SW.state_today(fr, swp, eqty)
     if stt["triggered"]:
@@ -1872,13 +1889,33 @@ def page_swing():
     ck = pd.DataFrame([{"": "✅" if okk else "❌", "เงื่อนไข": nm, "หมายเหตุ": dt}
                        for nm, okk, dt in stt["checklist"]])
     st.dataframe(ck, hide_index=True)
+    _d = stt.get("dist") or {}
+    if _d.get("on"):
+        _dtxt = (f"🔴 **กระจายของ (release) ติดป้าย** — โหวต {_d['votes']}/4"
+                 if _d.get("show") else
+                 (f"◻️ กระจายของ: แท่งแรก (ยังไม่ครบ 2 แท่ง) — โหวต {_d['votes']}/4"
+                  if _d.get("hot") else f"⚪ กระจายของ: ไม่ติด — โหวต {_d['votes']}/4"))
+        if _d.get("pass_names"):
+            _dtxt += " · ผ่าน: " + " + ".join(_d["pass_names"])
+        _dtxt += (f" · แถวบน Pine = `{_d['pine_dash']}`")
+        (st.warning if _d.get("show") else st.caption)(_dtxt)
+        st.caption("ℹ️ **แสดงผลอย่างเดียว เกรด C — ไม่เข้า ไม่ออก ไม่ปิดกั้น "
+                   "ไม่ปรับไซส์** (เว้นแต่คุณเปิด F2/F3 เอง) · ต้นฉบับ v5.14 "
+                   "ระบุเองว่า Wyckoff distribution เป็น *plausible mechanism, "
+                   "unproven as a signal* และ **ออร์เดอร์ VWAP/POV ที่รันดี ๆ "
+                   "ตรวจไม่เจอจาก OHLCV** → “ไม่มีเครื่องหมาย” ไม่เท่ากับ "
+                   "“ไม่มีคนขาย”"
+                   + ("  ·  ⚠️ F2 เปิดอยู่: ไซส์ไม้ใหม่ถูกลด"
+                      if _d.get("size_trim") else "")
+                   + ("  ·  ⚠️ F3 เปิดอยู่: trail ถูกบีบ"
+                      if _d.get("trail_on") else ""))
     e = stt["eff"]
     st.caption(f"โปรไฟล์ {e['sector']} V{e['vol_tier']} L{e['liq_tier']} → "
                f"พื้นสภาพคล่อง {e['liq_min']:.0f} ลบ., เพดานไซส์ {e['liq_max']:.1f}% "
                f"ของ ADV, VT target {e['vt_tgt']:.1f}% | stop {stt['sl_dist']} บาท "
                f"(2 ATR) | lot {stt['lot']} | size mult {stt['size_mult']}x → "
                f"~{stt['board_qty']:,} หุ้น ที่ risk 0.5%")
-    with st.expander("🧪 Backtest v5.13 (ย้อนหลังช่วงข้อมูลที่โหลด)"):
+    with st.expander("🧪 Backtest v5.14 (ย้อนหลังช่วงข้อมูลที่โหลด)"):
         bt = SW.backtest(fr, swp, eqty)
         lvl, vmsg = SE.sample_verdict(bt["n"])
         {"fail": st.error, "warn": st.warning, "ok": st.success}[lvl]("🧮 " + vmsg)
@@ -2138,11 +2175,21 @@ def page_set_accsq():
             adf = pd.DataFrame(aud["rows"])
             adf["ผ่าน"] = adf["ผ่าน"].map({True: "✅", False: "❌", None: "—"})
             st.dataframe(adf, hide_index=True, use_container_width=True)
+            if "dist_rows" in aud:
+                st.markdown(f"**ฝั่งกระจายของ (v5.14) — แถว `Distrib (release)` "
+                            f"บน TradingView ควรเป็น `{aud['dist_pine_dash']}`**")
+                ddf = pd.DataFrame(aud["dist_rows"])
+                ddf["ผ่าน"] = ddf["ผ่าน"].map({True: "✅", False: "❌", None: "—"})
+                st.dataframe(ddf, hide_index=True, use_container_width=True)
+                st.caption("ข้อ 1 และ 4 ใช้เกณฑ์ร่วมกับฝั่งสะสมโดยตั้งใจ "
+                           "(ต้นฉบับไม่เพิ่ม input ชุดที่สองให้ตัวชี้วัดเกรด C) "
+                           "· ต่างกันแค่ข้อ 2 กับ 3 ที่กลับด้าน")
             st.caption(
                 f"ถ้าตัวเลขในคอลัมน์ 'ค่าที่วัดได้' ต่างจาก TradingView อย่างมี"
                 "นัย แปลว่า **ข้อมูลดิบต่างกัน** (Yahoo vs ตลท.) ไม่ใช่สูตรต่างกัน "
-                "— สูตรถูกตรวจแบบไล่ทีละแท่งแล้วว่าตรงกับ Pine v5.13 "
-                "(ดู test_v14.py) · ถ้าตรงกันแต่สถานะไม่ตรง ให้ดูข้อ 1-2 ด้านบน")
+                "— สูตรถูกตรวจแบบไล่ทีละแท่งแล้วว่าตรงกับ Pine v5.14 "
+                "(ดู test_v14.py / test_v514.py) · ถ้าตรงกันแต่สถานะไม่ตรง "
+                "ให้ดูข้อ 1-2 ด้านบน")
         else:
             st.caption("ไม่พบราคาของตัวนี้ในชุดที่โหลดมา")
 
@@ -2159,6 +2206,10 @@ def page_set_accsq():
                 "4) **ตลาดไม่ตาย**: วอลุ่มเฉลี่ย 20 ≥ 0.7× ฐาน 100 แท่ง\n\n"
                 "ต้อง ≥3/4 **สองแท่งติด** และอยู่ใต้ trigger + ครึ่งล่างของกรอบ "
                 "(ตำแหน่ง ≤ 65%) จึงขึ้น 'สะสม'\n\n"
+                "**ฝั่งกระจายของ (v5.14) = กระจกเงาเป๊ะ**: ข้อ 1 และ 4 เหมือนกัน, "
+                "ข้อ 2 กลับเป็น *วอลุ่มวันลบ ≥ 1.25× วันบวก*, ข้อ 3 กลับเป็น "
+                "*CLV เฉลี่ย ≤ −0.10*, บริบทกลับเป็น *เหนือ breakdown + "
+                "ครึ่งบนของกรอบ (≥ 35%)* — ใช้ input ชุดเดียวกัน\n\n"
                 "เหตุผลเชิงทฤษฎี: square-root impact law บอกว่า metaorder ทิ้ง"
                 "รอยเท้าวอลุ่มหลายวัน — แต่คำเตือนของต้นฉบับ: เครื่องมือสาย "
                 "OBV/AD หลักฐาน weak/mixed, Wyckoff เป็น anecdotal และออร์เดอร์ "
@@ -2226,6 +2277,11 @@ def _stk_context(tickers: list[str]) -> dict:
                                               if r["pos_in_rng"] == r["pos_in_rng"]
                                               else None),
                       "หมายเหตุ": "proxy เกรด C — display only"},
+            "กระจายของ": {"โหวต": f"{int(r['dist_votes'])}/4",
+                           "ติดป้ายกระจาย": bool(r["dist_show"]),
+                           "หมายเหตุ": "v5.14 กระจกเงาของสะสม — proxy เกรด C "
+                                        "display only · VWAP/POV ที่รันดีตรวจไม่เจอ "
+                                        "→ ไม่ติดป้าย ≠ ไม่มีคนขาย"},
             "vol_rank": (round(float(r["vol_rank"]))
                          if r["vol_rank"] == r["vol_rank"] else None),
             "ADV20_ลบ": (round(float(r["liq_val"]) / 1e6, 1)
@@ -2990,7 +3046,8 @@ MODULE_NEEDS = {
                                 "walk_forward_splits"]),
     "accum": ("ACC", ["VERSION", "squeeze_frame", "accumulation_frame",
                       "status_label", "audit_rows", "footprint_v641",
-                      "audit_rows_v641", "MARKER_NOTE"]),
+                      "audit_rows_v641", "MARKER_NOTE",
+                      "dist_audit_rows", "dist_label", "DIST_VOTE_KEYS"]),
     "datastamp": ("DS", ["VERSION", "describe", "render", "bar_is_closed",
                          "age_text", "staleness", "last_index", "fmt",
                          "now_th"]),
